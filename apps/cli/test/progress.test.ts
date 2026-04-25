@@ -21,6 +21,32 @@ describe("formatProgressEvent", () => {
 
 		expect(
 			formatProgressEvent({
+				type: "chunk_added",
+				chunk: {
+					id: "auth-chunk",
+					groupId: "auth",
+					file: { headPath: "src/auth.ts", basePath: "src/auth.ts" },
+					baseRange: { start: 1, end: 1 },
+					headRange: { start: 1, end: 1 },
+					kind: "change",
+					hunks: [
+						{
+							baseStart: 1,
+							baseLines: 1,
+							headStart: 1,
+							headLines: 1,
+							lines: [
+								{ kind: "delete", baseLine: 1, headLine: null, content: "old" },
+								{ kind: "add", baseLine: null, headLine: 1, content: "new" },
+							],
+						},
+					],
+				},
+			}),
+		).toBe("Chunk: src/auth.ts (change, 1 hunk)");
+
+		expect(
+			formatProgressEvent({
 				type: "finding_added",
 				finding: {
 					id: "bug",

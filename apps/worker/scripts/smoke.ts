@@ -21,6 +21,7 @@ const BASE = process.env.REVIEW_AGENT_BASE_URL ?? "http://localhost:8787";
 interface CreateReviewResponse {
 	reviewId: string;
 	jwt: string;
+	lifecycleJwt: string;
 	mcpUrl: string;
 	reviewUrl: string;
 	expiresAt: string;
@@ -46,7 +47,11 @@ async function main() {
 	// Fire and forget SSE subscription. We collect events into an array and print at the end.
 	const events: Array<{ event: string; data: unknown }> = [];
 	const sseAbort = new AbortController();
-	const ssePromise = subscribeSse(`${BASE}/reviews/${review.reviewId}/events`, events, sseAbort.signal);
+	const ssePromise = subscribeSse(
+		`${BASE}/reviews/${review.reviewId}/events`,
+		events,
+		sseAbort.signal,
+	);
 
 	await sleep(200); // give the SSE handshake a moment
 
@@ -77,6 +82,27 @@ async function main() {
 		baseRange: { start: 10, end: 30 },
 		headRange: { start: 10, end: 35 },
 		kind: "change",
+		hunks: [
+			{
+				header: "@@ -10,3 +10,4 @@",
+				baseStart: 10,
+				baseLines: 3,
+				headStart: 10,
+				headLines: 4,
+				lines: [
+					{ kind: "context", baseLine: 10, headLine: 10, content: "export function verify() {" },
+					{ kind: "delete", baseLine: 11, headLine: null, content: "  return jwtVerify(token);" },
+					{
+						kind: "add",
+						baseLine: null,
+						headLine: 11,
+						content: "  return jwtVerify(token, { algorithms: ['HS256'] });",
+					},
+					{ kind: "context", baseLine: 12, headLine: 12, content: "}" },
+					{ kind: "add", baseLine: null, headLine: 13, content: "" },
+				],
+			},
+		],
 		caption: "Inline the algorithm pin",
 	});
 
@@ -94,7 +120,7 @@ async function main() {
 	await call(client, "add_inline_comment", {
 		id: "line-23",
 		chunkId: "verifier-fn",
-		line: 23,
+		line: 11,
 		side: "head",
 		body: "This branch is unreachable when algorithms is pinned.",
 		severity: "consider",
@@ -140,8 +166,8 @@ async function subscribeSse(
 		const { done, value } = await reader.read();
 		if (done) return;
 		buffer += value;
-		let idx: number;
-		while ((idx = buffer.indexOf("\n\n")) !== -1) {
+		let idx = buffer.indexOf("\n\n");
+		while (idx !== -1) {
 			const frame = buffer.slice(0, idx);
 			buffer = buffer.slice(idx + 2);
 			let event = "message";
@@ -151,6 +177,7 @@ async function subscribeSse(
 				else if (line.startsWith("data:")) data += line.slice(5).trim();
 			}
 			if (data) out.push({ event, data: JSON.parse(data) });
+			idx = buffer.indexOf("\n\n");
 		}
 	}
 }

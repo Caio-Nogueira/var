@@ -8,6 +8,7 @@
  *     POST  /reviews                  mint reviewId + JWT
  *     GET   /reviews/:id              JSON snapshot
  *     GET   /reviews/:id/events       SSE stream
+ *     POST  /reviews/:id/lifecycle    lifecycle token auth for running/failed
  *     POST  /mcp                      MCP server (streamable-HTTP, JWT-auth'd)
  */
 {
@@ -39,9 +40,10 @@
 
 	/**
 	 * Public base URL used when minting `reviewUrl` and `mcpUrl` in POST /reviews.
-	 * Override per environment with `wrangler.jsonc` env stanzas or via env vars.
+	 * This is the *deployed* origin. Local `wrangler dev` overrides it to http://localhost:8787
+	 * via `.dev.vars` so locally-minted review URLs still point at localhost.
 	 */
 	"vars": {
-		"PUBLIC_BASE_URL": "http://localhost:8787"
+		"PUBLIC_BASE_URL": "https://review-agent-worker.caionogueira0626.workers.dev"
 	}
 }

@@ -16,9 +16,25 @@ The CLI will use Bun as its runtime, Vitest for tests, and a deterministic mock-
 
 ### Execution Update: 2026-04-25
 
-The local CLI slice is now implemented and covered by deterministic e2e tests. The current branch contains `apps/cli`, Worker lifecycle tokens/routes, Hono-based Worker routing, OpenCode config generation, git/worktree isolation, SSE progress, process timeout/failure handling, and a mock OpenCode harness that starts `wrangler dev` and calls the Worker MCP endpoint.
+The local CLI slice is implemented and covered by deterministic e2e tests. The current branch contains `apps/cli`, Worker lifecycle tokens/routes, Hono-based Worker routing, OpenCode config generation, git/worktree isolation, SSE progress, process timeout/failure handling, and a mock OpenCode harness that starts `wrangler dev` and calls the Worker MCP endpoint.
 
-The next implementation focus is not replacing OpenCode. OpenCode remains the local reviewer process. The next focus is completing and hardening the Worker-hosted remote MCP server/tool surface that OpenCode calls during review. That remote MCP server is hosted by the existing Agents SDK `ReviewAgent` Durable Object and exposes tools such as `define_group`, `add_chunk`, `add_finding`, `add_inline_comment`, `set_narrative`, and `finalize_review`.
+The Worker-hosted remote MCP server/tool surface is now hardened as the production write path that OpenCode calls during review. OpenCode remains the local reviewer process. The remote MCP server is hosted by the existing Agents SDK `ReviewAgent` Durable Object and exposes `define_group`, `add_chunk`, `add_finding`, `add_inline_comment`, `set_narrative`, and `finalize_review`.
+
+The MCP payload is also the future web UI contract. OpenCode must send enough structured diff data through `add_chunk` for the Worker snapshot to render a review without checking out the repository: file paths on both sides, base/head ranges, and ordered diff hunks with line kind, line numbers, and raw line content. The next milestone can build a React SPA that loads `/reviews/:id` from the review URL returned by `POST /reviews` and echoed by `finalize_review`; that SPA work is intentionally out of scope here.
+
+### Done In This Pass
+
+- U1-U7: CLI orchestration, lifecycle tokens/routes, git metadata/worktree isolation, OpenCode config/prompt generation, SSE progress, failure persistence, redaction, and spawned-Worker e2e with mock OpenCode.
+- U10: Worker remote MCP server hardening with MCP-audience auth, Durable Object scoped persistence, structured diff hunks, foreign-key checks, terminal-state guards, line-anchor validation, group child projections, secret-like diff-line redaction, concise MCP tool responses, and `finalize_review` returning the canonical review URL.
+- Test coverage: schema tests for structured chunks, Worker MCP route/tool integration tests through `wrangler dev`, and CLI e2e assertions that persisted snapshots include real repo metadata, base/head SHAs, groups, chunks, findings, inline comments, hunk lines, and finalization metadata.
+
+### Still Left
+
+- U8: optional real OpenCode smoke coverage behind an explicit opt-in flag/env var.
+- U9: README and `docs/checkpoint.md` refresh with CLI usage, deterministic e2e commands, and real-smoke instructions.
+- Route-level lifecycle edge coverage beyond the current token separation and e2e failure-state coverage.
+- Future React SPA in `apps/web` that renders `/r/:id` from the persisted Worker snapshot.
+- Deferred product/runtime work: dirty-worktree review mode, standalone binary compilation, token refresh/longer TTL, and large-diff budgeting.
 
 ---
 
@@ -66,9 +82,13 @@ The checkpoint defines the intended CLI flow: compute base/head, `POST /reviews`
 ### Deferred to Follow-Up Work
 
 - Web review UI in `apps/web`: planned as M2 in the checkpoint but intentionally outside this CLI-focused phase.
+- Optional real OpenCode smoke coverage: default tests use mock OpenCode for deterministic behavior; a real LLM/provider-auth smoke remains manual/opt-in.
+- README and checkpoint documentation refresh: implementation details are now in code/tests, but contributor-facing usage docs still need updating.
+- Lifecycle route edge tests: current coverage proves token audience separation and CLI failure persistence; direct route-level edge cases can be expanded.
 - Dirty worktree review mode: requires new metadata and prompt semantics for reproducible line anchors.
 - Standalone binary compilation via `bun build --compile`: useful for distribution, but not required for this local CLI milestone.
 - Longer-lived review credentials or token refresh: revisit if real reviews approach the current one-hour JWT TTL.
+- Large-diff budgeting: structured hunk payloads make the UI self-contained, but future work should cap, summarize, or paginate very large diff payloads.
 
 ---
 
@@ -117,6 +137,7 @@ The checkpoint defines the intended CLI flow: compute base/head, `POST /reviews`
 - Best-effort SSE for progress: if SSE drops, warn once and continue to determine completion from child exit plus final snapshot verification rather than building a reconnect subsystem in M3.
 - Redaction before persistence/output: sanitize Bearer tokens, JWT-like strings, `OPENCODE_CONFIG_CONTENT`, provider keys, auth headers, and child diagnostics before printing or sending lifecycle `failed.error`.
 - The OpenCode config must explicitly enable the review MCP tool namespace (`review_*`) so the review agent can call the Worker-hosted tools. Web/code research tools may be allowed for review context, but mutation tools and broad bash remain denied.
+- Review chunks are persisted as UI-ready diff data, not just file/range pointers. The Worker does not inspect git, so OpenCode must pass structured hunk lines in `add_chunk`; the SPA should be able to render from the Worker snapshot alone.
 
 ---
 
@@ -133,18 +154,19 @@ The checkpoint defines the intended CLI flow: compute base/head, `POST /reviews`
 - Where should the prompt live? Inline constant exported from CLI source for tests.
 - Should M3 add a lifecycle endpoint? Yes; the CLI will call it to mark `running`/`failed`.
 
-### Deferred to Implementation
+### Resolved During Implementation
 
-- Exact `wrangler dev` port strategy: implementation should choose either a serial fixed port matching `PUBLIC_BASE_URL` or a dynamic port plus matching config override; the invariant is that the harness owns test `JWT_SECRET`, base URL alignment, readiness probing, state isolation, and teardown without depending on a developer's `.dev.vars`.
-- Exact OpenCode JSON event handling: M3 can treat child JSON as opaque unless empirical testing shows useful fatal/error records that should be surfaced.
-- Exact timeout values: choose conservative defaults during implementation and make them overrideable for tests.
-- Real OpenCode smoke behavior: optional coverage should stay narrow and diagnostic; default correctness comes from deterministic mock e2e plus generated-config tests, not model behavior.
+- `wrangler dev` e2e uses a dynamic localhost port, matching `PUBLIC_BASE_URL`, a deterministic test `JWT_SECRET`, isolated `--persist-to` state, readiness probing through `/_healthz`, and teardown from the harness.
+- OpenCode JSON output remains opaque for this phase; SSE and final Worker snapshots are the user-visible progress/completion source.
+- Timeouts are conservative and overrideable in tests through the CLI `--timeout-ms` flag.
+- Real OpenCode smoke remains optional and deferred; default correctness comes from deterministic mock e2e plus generated-config and Worker MCP route/tool tests.
 
 ### Current Implementation Status
 
 - Implemented: U1 through U7 core CLI/e2e scope, including lifecycle tokens, CLI scaffold, git/worktree isolation, Worker API client, OpenCode config/prompt generation, process orchestration, SSE progress, sanitization, spawned `wrangler dev` e2e, and mock OpenCode MCP calls.
-- Implemented but still needs hardening: the Worker-hosted MCP server exists in `apps/worker/src/mcp.ts` and persists through `apps/worker/src/review-agent.ts`; next work should make this tool surface production-grade with direct route/tool coverage and real OpenCode smoke validation.
-- Still deferred: optional real OpenCode smoke coverage, README/checkpoint documentation refresh, route-level lifecycle auth edge tests, terminal-state MCP mutation tests, and any future web UI work.
+- Implemented: U10 Worker-hosted MCP hardening, including UI-ready structured diff hunks, group projection child IDs, stricter foreign-key/terminal/line-anchor validation, secret-like diff-line redaction, finalize URL response, and direct Worker MCP route/tool coverage.
+- Strengthened: CLI e2e now asserts persisted review metadata and content, not just counts: repo/branch, base/head SHAs, group child IDs, structured hunk lines, finding refs, inline comment anchors, summary, and `finalizedAt`.
+- Still deferred: U8 real OpenCode smoke, U9 docs refresh, expanded lifecycle route edge tests, and future web UI work.
 
 ---
 
@@ -606,6 +628,8 @@ Failure path: if OpenCode cannot spawn, exits non-zero, times out, is interrupte
 
 - U10. **Complete the Worker Remote MCP Tool Server**
 
+**Status:** Implemented in the current branch. Remaining related work is real OpenCode smoke coverage and UI implementation, not additional MCP persistence plumbing.
+
 **Goal:** Make the Worker-hosted MCP server the production-quality tool surface OpenCode calls during review, using the Agents SDK `ReviewAgent` Durable Object as the per-review host and state owner.
 
 **Requirements:** R12, R13, R14, R15, R16
@@ -628,9 +652,11 @@ Failure path: if OpenCode cannot spawn, exits non-zero, times out, is interrupte
 - Authenticate `/mcp` with an MCP-audience JWT only, then route to `getAgentByName(env.ReviewAgent, claims.reviewId)` so the Agents SDK `ReviewAgent` Durable Object owns all per-review state.
 - Register the review tools inside the per-review Agent context: `define_group`, `add_chunk`, `add_finding`, `add_inline_comment`, `set_narrative`, and `finalize_review`.
 - Keep `reviewId` out of all tool input schemas. Tool handlers must derive review identity exclusively from the authenticated Durable Object instance selected by the Worker route.
+- Make `add_chunk` carry the actual UI diff payload: `FileRef`, base/head ranges, and one or more structured hunks whose lines include `context`/`add`/`delete`, side-specific line numbers, and raw content without diff prefixes.
 - Validate tool inputs with shared Zod schemas from `@review-agent/schema`, then enforce semantic invariants in `ReviewAgent`: slug uniqueness, group/chunk foreign-key references, terminal-state rejection, and bounded strings.
 - Persist every successful tool call to SQLite first, rebuild the projected `Review`, call `setState`, and emit the corresponding SSE event so CLI and future UI clients observe progress.
 - Treat `finalize_review` as the only successful completion path. Lifecycle `failed` remains only for orchestration failures outside OpenCode's tool flow.
+- Return the review URL from `finalize_review` in the MCP tool response so the local reviewer has the same canonical URL the CLI prints.
 - Make tool descriptions concrete enough for OpenCode to choose the right tool, especially when to use group-level `add_finding` versus line-level `add_inline_comment`.
 - Return concise MCP tool responses that confirm the write without leaking stored review data or credentials.
 
@@ -655,8 +681,15 @@ Failure path: if OpenCode cannot spawn, exits non-zero, times out, is interrupte
 
 **Verification:**
 - Worker MCP route/tool tests prove the remote MCP server is complete independently from the CLI.
-- CLI e2e remains the end-to-end proof that OpenCode-facing config, Worker routing, MCP auth, Durable Object persistence, SSE progress, and final snapshot verification work together.
+- CLI e2e proves OpenCode-facing config, Worker routing, MCP auth, Durable Object persistence, SSE progress, final snapshot verification, and persisted UI-renderable review metadata work together.
 - Optional real OpenCode smoke can be added after the MCP server contract is stable.
+
+**Implemented Details:**
+- `add_chunk` now persists UI-ready structured hunks with side-specific line anchors and raw line content.
+- `ReviewAgent` validates hunk ordering/counts, inline comment anchors, chunk/finding foreign keys, duplicate IDs, terminal-state writes, and token-scoped review identity.
+- `ReviewAgent` rebuilds group child ID projections from persisted chunks/findings/comments so the SPA can navigate group contents without recomputing relationships.
+- Secret-like diff content is redacted before persistence/SSE, while CLI/OpenCode diagnostics continue to be sanitized separately.
+- `finalize_review` returns the canonical review URL in its MCP response, matching the CLI-visible URL.
 
 ---
 

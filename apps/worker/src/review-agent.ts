@@ -193,19 +193,24 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 	addChunk(chunk: Chunk): Chunk {
 		this.requireWritable();
 		this.requireGroupExists(chunk.groupId);
+		validateChunkDiff(chunk);
+		const persisted = redactChunkContent(chunk);
 		try {
 			this
-				.sql`INSERT INTO chunks (id, group_id, json) VALUES (${chunk.id}, ${chunk.groupId}, ${JSON.stringify(chunk)})`;
+				.sql`INSERT INTO chunks (id, group_id, json) VALUES (${persisted.id}, ${persisted.groupId}, ${JSON.stringify(persisted)})`;
 		} catch (err) {
 			throw collisionFor("chunk", chunk.id, err);
 		}
-		this.afterMutation({ type: "chunk_added", chunk });
-		return chunk;
+		this.afterMutation({ type: "chunk_added", chunk: persisted });
+		return persisted;
 	}
 
 	addFinding(finding: Finding): Finding {
 		this.requireWritable();
 		this.requireGroupExists(finding.groupId);
+		for (const ref of finding.refs) {
+			if (ref.kind === "chunk") this.requireChunkInGroup(ref.chunkId, finding.groupId);
+		}
 		try {
 			this
 				.sql`INSERT INTO findings (id, group_id, json) VALUES (${finding.id}, ${finding.groupId}, ${JSON.stringify(finding)})`;
@@ -218,7 +223,8 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 
 	addInlineComment(comment: InlineComment): InlineComment {
 		this.requireWritable();
-		this.requireChunkExists(comment.chunkId);
+		const chunk = this.requireChunkExists(comment.chunkId);
+		validateCommentAnchor(comment, chunk);
 		try {
 			this
 				.sql`INSERT INTO comments (id, chunk_id, json) VALUES (${comment.id}, ${comment.chunkId}, ${JSON.stringify(comment)})`;
@@ -235,7 +241,7 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 		this.afterMutation({ type: "narrative_set", summary });
 	}
 
-	finalize(summary: string | undefined): void {
+	finalize(summary: string | undefined): ReviewAgentState {
 		const meta = this.requireWritable();
 		const next: MetaRow = {
 			...meta,
@@ -246,6 +252,12 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 		if (effective !== undefined) next.summary = effective;
 		this.writeMeta(next);
 		this.afterMutation({ type: "finalized", ...(summary !== undefined ? { summary } : {}) });
+		return this.project(next);
+	}
+
+	reviewUrl(): string {
+		const meta = this.requireInitialized();
+		return `${this.env.PUBLIC_BASE_URL.replace(/\/$/, "")}/r/${meta.id}`;
 	}
 
 	markRunning(meta = this.requireInitialized()): ReviewAgentState {
@@ -328,9 +340,19 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 		if (!rows[0] || rows[0].count === 0) throw new Error(`group not found: ${id}`);
 	}
 
-	private requireChunkExists(id: string): void {
-		const rows = this.sql<{ count: number }>`SELECT COUNT(*) as count FROM chunks WHERE id = ${id}`;
-		if (!rows[0] || rows[0].count === 0) throw new Error(`chunk not found: ${id}`);
+	private requireChunkExists(id: string): Chunk {
+		const rows = this.sql<{ json: string }>`SELECT json FROM chunks WHERE id = ${id}`;
+		const first = rows[0];
+		if (!first) throw new Error(`chunk not found: ${id}`);
+		return JSON.parse(first.json) as Chunk;
+	}
+
+	private requireChunkInGroup(id: string, groupId: string): Chunk {
+		const chunk = this.requireChunkExists(id);
+		if (chunk.groupId !== groupId) {
+			throw new Error(`chunk ${id} does not belong to group ${groupId}`);
+		}
+		return chunk;
 	}
 
 	/**
@@ -349,7 +371,7 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 		const m = meta ?? this.readMeta();
 		if (!m) return BLANK_REVIEW;
 
-		const groups = this.sql<{ json: string }>`SELECT json FROM groups ORDER BY seq`.map(
+		const persistedGroups = this.sql<{ json: string }>`SELECT json FROM groups ORDER BY seq`.map(
 			(r) => JSON.parse(r.json) as Group,
 		);
 		const chunks = this.sql<{ json: string }>`SELECT json FROM chunks ORDER BY seq`.map(
@@ -361,6 +383,7 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 		const comments = this.sql<{ json: string }>`SELECT json FROM comments ORDER BY seq`.map(
 			(r) => JSON.parse(r.json) as InlineComment,
 		);
+		const groups = attachGroupChildren(persistedGroups, chunks, findings, comments);
 
 		const review: ReviewAgentState = {
 			id: m.id,
@@ -398,6 +421,158 @@ function collisionFor(kind: string, id: string, err: unknown): Error {
 	const message = err instanceof Error ? err.message : String(err);
 	if (message.includes("UNIQUE")) return new ConflictError(`${kind} id already exists: ${id}`);
 	return err instanceof Error ? err : new Error(message);
+}
+
+function attachGroupChildren(
+	groups: Group[],
+	chunks: Chunk[],
+	findings: Finding[],
+	comments: InlineComment[],
+): Group[] {
+	const chunkIdsByGroup = new Map<string, string[]>();
+	const findingIdsByGroup = new Map<string, string[]>();
+	const commentIdsByGroup = new Map<string, string[]>();
+	const groupIdByChunkId = new Map<string, string>();
+
+	for (const chunk of chunks) {
+		groupIdByChunkId.set(chunk.id, chunk.groupId);
+		appendId(chunkIdsByGroup, chunk.groupId, chunk.id);
+	}
+	for (const finding of findings) appendId(findingIdsByGroup, finding.groupId, finding.id);
+	for (const comment of comments) {
+		const groupId = groupIdByChunkId.get(comment.chunkId);
+		if (groupId !== undefined) appendId(commentIdsByGroup, groupId, comment.id);
+	}
+
+	return groups.map((group) => ({
+		...group,
+		chunkIds: chunkIdsByGroup.get(group.id) ?? [],
+		findingIds: findingIdsByGroup.get(group.id) ?? [],
+		commentIds: commentIdsByGroup.get(group.id) ?? [],
+	}));
+}
+
+function appendId(map: Map<string, string[]>, key: string, id: string): void {
+	const values = map.get(key);
+	if (values === undefined) {
+		map.set(key, [id]);
+		return;
+	}
+	values.push(id);
+}
+
+function validateChunkDiff(chunk: Chunk): void {
+	validateRange("baseRange", chunk.baseRange);
+	validateRange("headRange", chunk.headRange);
+
+	for (const hunk of chunk.hunks) {
+		let nextBaseLine = hunk.baseStart;
+		let nextHeadLine = hunk.headStart;
+
+		for (const line of hunk.lines) {
+			if (line.kind === "context") {
+				validateExpectedLine("base", line.baseLine, nextBaseLine, chunk.id);
+				validateExpectedLine("head", line.headLine, nextHeadLine, chunk.id);
+				validateLineInChunkRange("base", line.baseLine, chunk.baseRange, chunk.id);
+				validateLineInChunkRange("head", line.headLine, chunk.headRange, chunk.id);
+				nextBaseLine += 1;
+				nextHeadLine += 1;
+				continue;
+			}
+
+			if (line.kind === "delete") {
+				validateExpectedLine("base", line.baseLine, nextBaseLine, chunk.id);
+				validateLineInChunkRange("base", line.baseLine, chunk.baseRange, chunk.id);
+				nextBaseLine += 1;
+				continue;
+			}
+
+			validateExpectedLine("head", line.headLine, nextHeadLine, chunk.id);
+			validateLineInChunkRange("head", line.headLine, chunk.headRange, chunk.id);
+			nextHeadLine += 1;
+		}
+
+		validateConsumedHunkSide("base", nextBaseLine, hunk.baseStart, hunk.baseLines, chunk.id);
+		validateConsumedHunkSide("head", nextHeadLine, hunk.headStart, hunk.headLines, chunk.id);
+	}
+}
+
+function validateCommentAnchor(comment: InlineComment, chunk: Chunk): void {
+	const found = chunk.hunks.some((hunk) =>
+		hunk.lines.some((line) =>
+			comment.side === "base" ? line.baseLine === comment.line : line.headLine === comment.line,
+		),
+	);
+	if (!found) {
+		throw new Error(`comment line ${comment.side}:${comment.line} not found in chunk ${chunk.id}`);
+	}
+}
+
+function validateRange(name: string, range: { start: number; end: number }): void {
+	if (range.start > range.end) return;
+	if (range.start < 1) throw new Error(`${name} must start at 1 or use an empty range`);
+}
+
+function validateExpectedLine(
+	side: "base" | "head",
+	actual: number,
+	expected: number,
+	chunkId: string,
+): void {
+	if (actual !== expected) {
+		throw new Error(
+			`${side} line ${actual} is out of order for chunk ${chunkId}; expected ${expected}`,
+		);
+	}
+}
+
+function validateLineInChunkRange(
+	side: "base" | "head",
+	line: number,
+	range: { start: number; end: number },
+	chunkId: string,
+): void {
+	if (!lineIsWithinRange(line, range)) {
+		throw new Error(`${side} line ${line} is outside ${side}Range for chunk ${chunkId}`);
+	}
+}
+
+function validateConsumedHunkSide(
+	side: "base" | "head",
+	nextLine: number,
+	start: number,
+	count: number,
+	chunkId: string,
+): void {
+	const expected = start + count;
+	if (nextLine !== expected) {
+		throw new Error(`${side} hunk line count mismatch for chunk ${chunkId}; expected ${count}`);
+	}
+}
+
+function lineIsWithinRange(line: number, range: { start: number; end: number }): boolean {
+	return range.start <= range.end && line >= range.start && line <= range.end;
+}
+
+function redactChunkContent(chunk: Chunk): Chunk {
+	return {
+		...chunk,
+		hunks: chunk.hunks.map((hunk) => ({
+			...hunk,
+			lines: hunk.lines.map((line) => ({ ...line, content: redactSecretLikeText(line.content) })),
+		})),
+	};
+}
+
+function redactSecretLikeText(value: string): string {
+	return value
+		.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED_SECRET]")
+		.replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_JWT]")
+		.replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "[REDACTED_SECRET]")
+		.replace(
+			/\b(api[_-]?key|secret|password|token)(\s*[:=]\s*["'])[^"'\s]+(["'])/gi,
+			"$1$2[REDACTED_SECRET]$3",
+		);
 }
 
 function isTerminal(status: ReviewStatus): boolean {

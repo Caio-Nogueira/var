@@ -55,8 +55,57 @@ describe("schema smoke", () => {
 			baseRange: { start: 0, end: -1 },
 			headRange: { start: 10, end: 30 },
 			kind: "change",
+			hunks: [
+				{
+					header: "@@ -0,0 +10,2 @@",
+					baseStart: 0,
+					baseLines: 0,
+					headStart: 10,
+					headLines: 2,
+					lines: [
+						{ kind: "add", baseLine: null, headLine: 10, content: "export function auth() {" },
+						{ kind: "add", baseLine: null, headLine: 11, content: "}" },
+					],
+				},
+			],
 		});
 		expect(parsed.file.basePath).toBeNull();
+	});
+
+	it("AddChunkInput requires structured hunk lines for UI rendering", () => {
+		expect(() =>
+			AddChunkInput.parse({
+				id: "new-helper",
+				groupId: "auth-refactor",
+				file: { headPath: "src/auth.ts", basePath: null },
+				baseRange: { start: 0, end: -1 },
+				headRange: { start: 10, end: 30 },
+				kind: "change",
+				hunks: [],
+			}),
+		).toThrow();
+	});
+
+	it("DiffLine encodes side-specific line anchors", () => {
+		expect(() =>
+			AddChunkInput.parse({
+				id: "bad-line",
+				groupId: "auth-refactor",
+				file: { headPath: "src/auth.ts", basePath: "src/auth.ts" },
+				baseRange: { start: 10, end: 10 },
+				headRange: { start: 10, end: 10 },
+				kind: "change",
+				hunks: [
+					{
+						baseStart: 10,
+						baseLines: 1,
+						headStart: 10,
+						headLines: 1,
+						lines: [{ kind: "add", baseLine: 10, headLine: 10, content: "bad" }],
+					},
+				],
+			}),
+		).toThrow();
 	});
 
 	it("Review parses a minimal pending review", () => {

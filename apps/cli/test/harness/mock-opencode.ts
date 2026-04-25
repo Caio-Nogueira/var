@@ -66,6 +66,19 @@ async function main(): Promise<void> {
 		baseRange: { start: 1, end: 1 },
 		headRange: { start: 1, end: 1 },
 		kind: "change",
+		hunks: [
+			{
+				header: "@@ -1,1 +1,1 @@",
+				baseStart: 1,
+				baseLines: 1,
+				headStart: 1,
+				headLines: 1,
+				lines: [
+					{ kind: "delete", baseLine: 1, headLine: null, content: "export const value = 'base';" },
+					{ kind: "add", baseLine: null, headLine: 1, content: "export const value = 'head';" },
+				],
+			},
+		],
 		caption: "Changed app value",
 	});
 	await call(client, "add_finding", {

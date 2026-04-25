@@ -1,0 +1,217 @@
+/**
+ * Design tokens — Tailwind v4 CSS-first config.
+ *
+ * Aesthetic: editorial-technical. Warm paper surface, near-black ink, one rust accent for
+ * emphasis. Severity colors are functional: shown in dots and badges, not used as decoration.
+ * Diff-line backgrounds are intentionally muted so syntax highlighting stays readable on top.
+ *
+ * Dark mode mirrors the warm character — not pure black. The palette is the light palette
+ * inverted around the warm ink axis: `paper` becomes near-black warm, `ink` becomes near-white
+ * warm, with the same rust accent shifted slightly lighter for legibility on dark surfaces.
+ * Components reference tokens via `var(--color-*)`, so toggling `[data-theme]` on `<html>`
+ * flips the entire UI without per-component dark variants.
+ */
+
+@import "tailwindcss";
+
+@theme {
+	/* Surfaces — warm paper hierarchy. */
+	--color-paper: #faf9f5;
+	--color-surface-1: #ffffff;
+	--color-surface-2: #f1efe8;
+	--color-surface-3: #e8e5dc;
+
+	/* Ink — warm near-black to muted. */
+	--color-ink: #1a1815;
+	--color-ink-2: #4a4640;
+	--color-ink-3: #7a756b;
+	--color-ink-4: #a8a298;
+
+	/* Borders — quiet, paper-tinted. */
+	--color-line: #e0ddd2;
+	--color-line-strong: #c8c3b5;
+
+	/* Accent — one sharp rust used for active state and primary action. */
+	--color-accent: #c2410c;
+	--color-accent-soft: #fef0e6;
+
+	/* Severity — functional, not decorative. */
+	--color-sev-must: #b91c1c;
+	--color-sev-should: #b45309;
+	--color-sev-consider: #1d4ed8;
+	--color-sev-nit: #6b655c;
+
+	/* Status pill colors. */
+	--color-status-pending: #6b655c;
+	--color-status-running: #1d4ed8;
+	--color-status-finalized: #15803d;
+	--color-status-failed: #b91c1c;
+
+	/* Diff line backgrounds — muted enough to leave syntax highlighting legible. */
+	--color-diff-add-bg: #e6f4ea;
+	--color-diff-add-gutter: #b6d9bf;
+	--color-diff-del-bg: #fbe7e7;
+	--color-diff-del-gutter: #e0acac;
+	--color-diff-context-bg: transparent;
+
+	/* Type system — Plex Sans for UI/narrative, Plex Mono for code. */
+	--font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+	--font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", monospace;
+
+	/* Type scale tweaked for dense reading. */
+	--text-xs: 0.75rem;
+	--text-sm: 0.8125rem;
+	--text-base: 0.9375rem;
+	--text-lg: 1.0625rem;
+	--text-xl: 1.25rem;
+	--text-2xl: 1.5rem;
+
+	/* Motion — quick + composed. */
+	--ease-out-soft: cubic-bezier(0.2, 0.7, 0.25, 1);
+}
+
+/* ---- Dark theme overrides ------------------------------------------------- *
+ *
+ * Selected via `[data-theme="dark"]` on <html>. The theme state module sets this attribute on
+ * load (after reading localStorage / prefers-color-scheme) and on every toggle. We override the
+ * same token names declared in @theme above — Tailwind v4 emits utilities as `var(--color-*)`
+ * references, so overriding the variable cascades through both utility classes and inline
+ * `var(--color-*)` references in component styles.
+ */
+[data-theme="dark"] {
+	/* Surfaces — warm near-black hierarchy mirroring the paper stack. */
+	--color-paper: #1a1815;
+	--color-surface-1: #221f1a;
+	--color-surface-2: #2c2924;
+	--color-surface-3: #38342d;
+
+	/* Ink — warm near-white descending to muted tertiary. */
+	--color-ink: #f0ede5;
+	--color-ink-2: #c4beb1;
+	--color-ink-3: #8a8478;
+	--color-ink-4: #5e5a51;
+
+	/* Borders — paper-tinted at low contrast, climbing to visible structure. */
+	--color-line: #2f2c26;
+	--color-line-strong: #45413a;
+
+	/* Accent — same rust, shifted lighter for AA contrast on the dark paper. */
+	--color-accent: #f0844a;
+	--color-accent-soft: #3a2418;
+
+	/* Severity — lifted toward AA contrast against dark surfaces. */
+	--color-sev-must: #f87171;
+	--color-sev-should: #fbbf24;
+	--color-sev-consider: #60a5fa;
+	--color-sev-nit: #a8a298;
+
+	/* Status pill — mirrors severity adjustments for the same reason. */
+	--color-status-pending: #a8a298;
+	--color-status-running: #60a5fa;
+	--color-status-finalized: #4ade80;
+	--color-status-failed: #f87171;
+
+	/* Diff backgrounds — keep the green/red hue cue, drop saturation hard so highlight tokens
+	 * remain the loudest thing in the cell. */
+	--color-diff-add-bg: #14291f;
+	--color-diff-add-gutter: #2d5a3f;
+	--color-diff-del-bg: #2e1717;
+	--color-diff-del-gutter: #5a2d2d;
+}
+
+/* ---- Resets / base ---------------------------------------------------- */
+
+html,
+body,
+#app {
+	height: 100%;
+}
+
+body {
+	background-color: var(--color-paper);
+	color: var(--color-ink);
+	font-family: var(--font-sans);
+	font-size: var(--text-base);
+	line-height: 1.55;
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+}
+
+::selection {
+	background: color-mix(in oklab, var(--color-accent) 18%, transparent);
+	color: var(--color-ink);
+}
+
+/* Focus visibility — never let interactive elements lose this. */
+:focus-visible {
+	outline: 2px solid var(--color-accent);
+	outline-offset: 2px;
+	border-radius: 2px;
+}
+
+/* ---- Stream-in animation --------------------------------------------- */
+
+@keyframes stream-in {
+	from {
+		opacity: 0;
+		transform: translateY(8px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+.stream-in {
+	animation: stream-in 220ms var(--ease-out-soft) both;
+}
+
+/* Soft pulse on the live status indicator. */
+@keyframes soft-pulse {
+	0%,
+	100% {
+		opacity: 1;
+		transform: scale(1);
+	}
+	50% {
+		opacity: 0.55;
+		transform: scale(0.92);
+	}
+}
+
+.soft-pulse {
+	animation: soft-pulse 1.6s var(--ease-out-soft) infinite;
+}
+
+/* ---- Highlight.js theme overlay -------------------------------------- *
+ *
+ * The github.css theme is imported from `lib/highlight.ts`. We override its base background so
+ * our add/delete row backgrounds win.
+ */
+.hljs {
+	background: transparent !important;
+	padding: 0 !important;
+	color: inherit;
+}
+
+/* ---- Utilities -------------------------------------------------------- */
+
+/* Hide scrollbars on the sidebar without breaking scroll. */
+.scrollbar-quiet {
+	scrollbar-width: thin;
+	scrollbar-color: var(--color-line-strong) transparent;
+}
+.scrollbar-quiet::-webkit-scrollbar {
+	width: 8px;
+}
+.scrollbar-quiet::-webkit-scrollbar-thumb {
+	background-color: var(--color-line-strong);
+	border-radius: 4px;
+}
+
+/* Diff cell — fixed-width line numbers, slightly reduced font for density. */
+.diff-line {
+	font-family: var(--font-mono);
+	font-size: 12.5px;
+	line-height: 1.55;
+}

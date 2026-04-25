@@ -28,8 +28,10 @@ const SERVER_VERSION = "0.0.1";
  * Tool callback handlers all return a single text-content reply. The actual side effect is the
  * mutation on the agent + the SSE broadcast emitted by `afterMutation`.
  */
-function ok(text: string) {
-	return { content: [{ type: "text" as const, text }] };
+function ok(message: string, data: Record<string, unknown> = {}) {
+	return {
+		content: [{ type: "text" as const, text: JSON.stringify({ ok: true, message, ...data }) }],
+	};
 }
 
 /**
@@ -61,7 +63,7 @@ function buildServer(agent: ReviewAgent): McpServer {
 				findingIds: [],
 				commentIds: [],
 			});
-			return ok(`group ${group.id} defined`);
+			return ok(`group ${group.id} defined`, { groupId: group.id, severity: group.severity });
 		},
 	);
 
@@ -69,8 +71,11 @@ function buildServer(agent: ReviewAgent): McpServer {
 		"add_chunk",
 		{
 			description:
-				"Attach a code chunk to a group. Chunks describe a region in base/head revisions. " +
-				"For pure additions, set baseRange.start > baseRange.end (e.g. {start:0,end:-1}).",
+				"Attach a code chunk to a group with structured diff hunks for UI rendering. " +
+				"Each hunk line must include kind, raw content without +/- prefix, and base/head line anchors. " +
+				"For additions use basePath:null, an empty baseRange, and add lines with baseLine:null. " +
+				"For deletions use headPath:null, an empty headRange, and delete lines with headLine:null. " +
+				"For renames set both paths. Redact secret-like line content but keep line anchors.",
 			inputSchema: AddChunkInput.shape,
 		},
 		async (raw) => {
@@ -82,9 +87,15 @@ function buildServer(agent: ReviewAgent): McpServer {
 				baseRange: input.baseRange,
 				headRange: input.headRange,
 				kind: input.kind,
+				hunks: input.hunks,
 				...(input.caption !== undefined ? { caption: input.caption } : {}),
 			});
-			return ok(`chunk ${chunk.id} added to ${chunk.groupId}`);
+			return ok(`chunk ${chunk.id} added to ${chunk.groupId}`, {
+				chunkId: chunk.id,
+				groupId: chunk.groupId,
+				hunks: chunk.hunks.length,
+				lines: chunk.hunks.reduce((count, hunk) => count + hunk.lines.length, 0),
+			});
 		},
 	);
 
@@ -106,7 +117,11 @@ function buildServer(agent: ReviewAgent): McpServer {
 				body: input.body,
 				refs: input.refs ?? [],
 			});
-			return ok(`finding ${finding.id} added`);
+			return ok(`finding ${finding.id} added`, {
+				findingId: finding.id,
+				groupId: finding.groupId,
+				severity: finding.severity,
+			});
 		},
 	);
 
@@ -128,7 +143,12 @@ function buildServer(agent: ReviewAgent): McpServer {
 				body: input.body,
 				severity: input.severity,
 			});
-			return ok(`comment ${comment.id} added`);
+			return ok(`comment ${comment.id} added`, {
+				commentId: comment.id,
+				chunkId: comment.chunkId,
+				side: comment.side,
+				line: comment.line,
+			});
 		},
 	);
 
@@ -157,8 +177,12 @@ function buildServer(agent: ReviewAgent): McpServer {
 		},
 		async (raw) => {
 			const input = FinalizeReviewInput.parse(raw);
-			agent.finalize(input.summary);
-			return ok("review finalized");
+			const snapshot = agent.finalize(input.summary);
+			return ok("review finalized", {
+				reviewId: snapshot.id,
+				reviewUrl: agent.reviewUrl(),
+				status: snapshot.status,
+			});
 		},
 	);
 

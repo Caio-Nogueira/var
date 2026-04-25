@@ -5,6 +5,7 @@
  *   POST /reviews                    Mint a review + JWT.
  *   GET  /reviews/:id                JSON snapshot.
  *   GET  /reviews/:id/events         SSE stream of state changes.
+ *   POST /reviews/:id/lifecycle      CLI-owned running/failed transitions.
  *   POST /mcp                        MCP server (streamable-HTTP, Bearer JWT).
  *
  * Static SPA falls through via `env.ASSETS.fetch` for everything else.

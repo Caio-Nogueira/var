@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Review } from "@review-agent/schema";
+import { Review, type Review as ReviewType } from "@review-agent/schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type GitFixture, createGitFixture } from "../harness/git-fixture.js";
 import { createMockOpenCodeBin } from "../harness/mock-bin.js";
@@ -47,15 +47,78 @@ describe("review CLI e2e", () => {
 			expect(result.stdout).toContain("Review created:");
 			expect(result.stdout).toContain("Review complete:");
 			expect(result.stdout).toContain("Group: [should_fix] Mock review");
+			expect(result.stdout).toContain("Chunk: src/app.ts (change, 1 hunk)");
 			expect(result.stdout).toContain("Finding: [consider] Mock finding");
 
 			const snapshot = await fetchSnapshot(result.stdout);
 			expect(snapshot.status).toBe("finalized");
+			expect(snapshot.repo).toEqual({
+				remoteUrl: "git@example.com:acme/repo.git",
+				branch: "main",
+			});
+			expect(snapshot.base).toEqual({ ref: "origin/main", sha: fixture.baseSha });
+			expect(snapshot.head).toEqual({ ref: "HEAD", sha: fixture.headSha });
 			expect(snapshot.groups).toHaveLength(1);
 			expect(snapshot.chunks).toHaveLength(1);
 			expect(snapshot.findings).toHaveLength(1);
 			expect(snapshot.comments).toHaveLength(1);
 			expect(snapshot.summary).toBe("Mock review finalized.");
+			expect(snapshot.finalizedAt).toEqual(expect.any(String));
+			expect(snapshot.groups[0]).toMatchObject({
+				id: "mock-review",
+				title: "Mock review",
+				theme: "test",
+				severity: "should_fix",
+				chunkIds: ["app-change"],
+				findingIds: ["mock-finding"],
+				commentIds: ["mock-comment"],
+			});
+			expect(snapshot.chunks[0]).toEqual({
+				id: "app-change",
+				groupId: "mock-review",
+				file: { headPath: "src/app.ts", basePath: "src/app.ts" },
+				baseRange: { start: 1, end: 1 },
+				headRange: { start: 1, end: 1 },
+				kind: "change",
+				caption: "Changed app value",
+				hunks: [
+					{
+						header: "@@ -1,1 +1,1 @@",
+						baseStart: 1,
+						baseLines: 1,
+						headStart: 1,
+						headLines: 1,
+						lines: [
+							{
+								kind: "delete",
+								baseLine: 1,
+								headLine: null,
+								content: "export const value = 'base';",
+							},
+							{
+								kind: "add",
+								baseLine: null,
+								headLine: 1,
+								content: "export const value = 'head';",
+							},
+						],
+					},
+				],
+			});
+			expect(snapshot.findings[0]).toMatchObject({
+				id: "mock-finding",
+				groupId: "mock-review",
+				severity: "consider",
+				title: "Mock finding",
+				refs: [{ kind: "chunk", chunkId: "app-change" }],
+			});
+			expect(snapshot.comments[0]).toMatchObject({
+				id: "mock-comment",
+				chunkId: "app-change",
+				line: 1,
+				side: "head",
+				severity: "nit",
+			});
 		} finally {
 			await fixture.cleanup();
 		}
@@ -165,11 +228,11 @@ describe("review CLI e2e", () => {
 		return { exitCode, stdout, stderr };
 	}
 
-	async function fetchSnapshot(stdout: string): Promise<Review> {
+	async function fetchSnapshot(stdout: string): Promise<ReviewType> {
 		const match = stdout.match(/\/r\/(rev_[a-z0-9]+)/);
 		if (!match?.[1]) throw new Error(`review id not found in stdout:\n${stdout}`);
 		const response = await fetch(`${server.baseUrl}/reviews/${match[1]}`);
 		if (!response.ok) throw new Error(`snapshot fetch failed ${response.status}`);
-		return (await response.json()) as Review;
+		return Review.parse(await response.json());
 	}
 });

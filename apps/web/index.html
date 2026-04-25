@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="color-scheme" content="light dark" />
+		<title>review</title>
+		<!--
+			Apply the theme attribute before any stylesheets evaluate so the first paint matches
+			the user's stored choice (or system preference). Mirrors the logic in
+			`src/state/theme.ts`. Wrapped in try/catch because localStorage throws in some private
+			browsing contexts; we silently fall back to `light` there.
+		-->
+		<script>
+			(function () {
+				try {
+					var stored = localStorage.getItem("theme");
+					var explicit = stored === "light" || stored === "dark";
+					var systemDark =
+						window.matchMedia &&
+						window.matchMedia("(prefers-color-scheme: dark)").matches;
+					var effective = explicit ? stored : systemDark ? "dark" : "light";
+					document.documentElement.dataset.theme = effective;
+					document.documentElement.style.colorScheme = effective;
+				} catch (e) {
+					document.documentElement.dataset.theme = "light";
+					document.documentElement.style.colorScheme = "light";
+				}
+			})();
+		</script>
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<!--
+			Two-typeface system: Plex Sans (UI, headlines, narrative) + Plex Mono (code, SHAs, line
+			numbers). Deliberately not Inter/Roboto. Plex Sans has a calm editorial voice in italic
+			that we use for narrative copy without needing a third face.
+		-->
+		<link
+			href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&display=swap"
+			rel="stylesheet"
+		/>
+	</head>
+	<body>
+		<div id="app"></div>
+		<script type="module" src="/src/main.tsx"></script>
+	</body>
+</html>

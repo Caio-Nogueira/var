@@ -9,6 +9,7 @@
  * - reviewId is minted by the Worker.
  * - Group, chunk, finding, and comment IDs are slugs the agent picks. The Worker enforces
  *   per-review uniqueness on writes (collisions are rejected).
+ * - Chunks include structured diff hunks so the SPA can render reviews from Worker state alone.
  */
 
 import { z } from "zod";
@@ -38,12 +39,16 @@ export type LineRange = z.infer<typeof LineRange>;
  * A file revision pinned to a side of the diff. We carry both base and head paths because
  * renames/moves are common and the UI wants to label both sides correctly.
  */
-export const FileRef = z.object({
-	/** Path on the head side. `null` if file was deleted in head. */
-	headPath: z.string().nullable(),
-	/** Path on the base side. `null` if file was added in head. */
-	basePath: z.string().nullable(),
-});
+export const FileRef = z
+	.object({
+		/** Path on the head side. `null` if file was deleted in head. */
+		headPath: z.string().min(1).max(1024).nullable(),
+		/** Path on the base side. `null` if file was added in head. */
+		basePath: z.string().min(1).max(1024).nullable(),
+	})
+	.refine((file) => file.headPath !== null || file.basePath !== null, {
+		message: "at least one of headPath or basePath is required",
+	});
 export type FileRef = z.infer<typeof FileRef>;
 
 /** Slug pattern shared across user-supplied IDs. */
@@ -63,6 +68,43 @@ const Slug = z
 export const ChunkKind = z.enum(["change", "context"]);
 export type ChunkKind = z.infer<typeof ChunkKind>;
 
+export const DiffLine = z.discriminatedUnion("kind", [
+	z.object({
+		kind: z.literal("context"),
+		/** 1-based line number in the base revision. */
+		baseLine: z.number().int().min(1),
+		/** 1-based line number in the head revision. */
+		headLine: z.number().int().min(1),
+		/** Raw line content without a diff prefix. */
+		content: z.string().max(4000),
+	}),
+	z.object({
+		kind: z.literal("add"),
+		baseLine: z.null(),
+		headLine: z.number().int().min(1),
+		content: z.string().max(4000),
+	}),
+	z.object({
+		kind: z.literal("delete"),
+		baseLine: z.number().int().min(1),
+		headLine: z.null(),
+		content: z.string().max(4000),
+	}),
+]);
+export type DiffLine = z.infer<typeof DiffLine>;
+
+export const DiffHunk = z.object({
+	/** Optional original unified-diff hunk header, e.g. `@@ -10,3 +10,4 @@`. */
+	header: z.string().max(500).optional(),
+	baseStart: z.number().int().min(0),
+	baseLines: z.number().int().min(0),
+	headStart: z.number().int().min(0),
+	headLines: z.number().int().min(0),
+	/** Ordered lines for this hunk. This is the UI rendering payload. */
+	lines: z.array(DiffLine).min(1).max(500),
+});
+export type DiffHunk = z.infer<typeof DiffHunk>;
+
 export const Chunk = z.object({
 	id: Slug,
 	groupId: Slug,
@@ -72,6 +114,8 @@ export const Chunk = z.object({
 	/** Range on the head revision. Empty range means "no head side" (pure deletion). */
 	headRange: LineRange,
 	kind: ChunkKind,
+	/** Structured diff payload persisted for the review UI. */
+	hunks: z.array(DiffHunk).min(1).max(50),
 	/** Optional one-line caption shown above the diff in the UI. */
 	caption: z.string().max(280).optional(),
 });
@@ -190,6 +234,7 @@ export const AddChunkInput = z.object({
 	baseRange: LineRange,
 	headRange: LineRange,
 	kind: ChunkKind,
+	hunks: z.array(DiffHunk).min(1).max(50),
 	caption: z.string().max(280).optional(),
 });
 export type AddChunkInput = z.infer<typeof AddChunkInput>;

@@ -8,7 +8,7 @@ export function formatProgressEvent(event: ReviewEvent): string | undefined {
 		case "group_added":
 			return `Group: [${event.group.severity}] ${singleLine(event.group.title)}`;
 		case "chunk_added":
-			return `Chunk: ${singleLine(formatFile(event.chunk.file.headPath ?? event.chunk.file.basePath))} (${event.chunk.kind})`;
+			return `Chunk: ${singleLine(formatFile(event.chunk.file.headPath ?? event.chunk.file.basePath))} (${event.chunk.kind}, ${event.chunk.hunks.length} hunk${event.chunk.hunks.length === 1 ? "" : "s"})`;
 		case "finding_added":
 			return `Finding: [${event.finding.severity}] ${singleLine(event.finding.title)}`;
 		case "comment_added":

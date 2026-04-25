@@ -1,44 +1,44 @@
 {
-  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
-  "vcs": {
-    "enabled": true,
-    "clientKind": "git",
-    "useIgnoreFile": true
-  },
-  "files": {
-    "ignoreUnknown": true,
-    "ignore": [
-      "**/dist/**",
-      "**/node_modules/**",
-      "**/.wrangler/**",
-      "**/.turbo/**",
-      "**/worker-configuration.d.ts"
-    ]
-  },
-  "formatter": {
-    "enabled": true,
-    "indentStyle": "tab",
-    "indentWidth": 1,
-    "lineWidth": 100
-  },
-  "javascript": {
-    "formatter": {
-      "quoteStyle": "double",
-      "trailingCommas": "all",
-      "semicolons": "always"
-    }
-  },
-  "linter": {
-    "enabled": true,
-    "rules": {
-      "recommended": true,
-      "style": {
-        "noNonNullAssertion": "off",
-        "useImportType": "error"
-      },
-      "suspicious": {
-        "noExplicitAny": "warn"
-      }
-    }
-  }
+	"$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"useIgnoreFile": true
+	},
+	"files": {
+		"ignoreUnknown": true,
+		"ignore": [
+			"**/dist/**",
+			"**/node_modules/**",
+			"**/.wrangler/**",
+			"**/.turbo/**",
+			"**/worker-configuration.d.ts"
+		]
+	},
+	"formatter": {
+		"enabled": true,
+		"indentStyle": "tab",
+		"indentWidth": 1,
+		"lineWidth": 100
+	},
+	"javascript": {
+		"formatter": {
+			"quoteStyle": "double",
+			"trailingCommas": "all",
+			"semicolons": "always"
+		}
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"recommended": true,
+			"style": {
+				"noNonNullAssertion": "off",
+				"useImportType": "error"
+			},
+			"suspicious": {
+				"noExplicitAny": "warn"
+			}
+		}
+	}
 }
