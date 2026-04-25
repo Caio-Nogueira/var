@@ -1,0 +1,263 @@
+/**
+ * Shared schema for review-agent.
+ *
+ * Two layers live here:
+ * 1. The state model the Worker stores and the SPA renders (`Review` and friends).
+ * 2. The tool input schemas the MCP server validates (`*Input`).
+ *
+ * IDs:
+ * - reviewId is minted by the Worker.
+ * - Group, chunk, finding, and comment IDs are slugs the agent picks. The Worker enforces
+ *   per-review uniqueness on writes (collisions are rejected).
+ */
+
+import { z } from "zod";
+
+// ---- Primitives -----------------------------------------------------------
+
+/**
+ * Action-oriented severity levels (chosen 2026-04-25). Sort order matches array order.
+ */
+export const SEVERITIES = ["must_fix", "should_fix", "consider", "nit"] as const;
+export const Severity = z.enum(SEVERITIES);
+export type Severity = z.infer<typeof Severity>;
+
+/**
+ * A line range within a single file revision. Both endpoints are inclusive and 1-based to match
+ * how humans (and `git diff`) talk about lines. An empty range is `start > end` (e.g. for a pure
+ * insertion the base side has start=N, end=N-1, hence we allow end=-1). The Worker treats this
+ * opaquely.
+ */
+export const LineRange = z.object({
+	start: z.number().int().min(0),
+	end: z.number().int().min(-1),
+});
+export type LineRange = z.infer<typeof LineRange>;
+
+/**
+ * A file revision pinned to a side of the diff. We carry both base and head paths because
+ * renames/moves are common and the UI wants to label both sides correctly.
+ */
+export const FileRef = z.object({
+	/** Path on the head side. `null` if file was deleted in head. */
+	headPath: z.string().nullable(),
+	/** Path on the base side. `null` if file was added in head. */
+	basePath: z.string().nullable(),
+});
+export type FileRef = z.infer<typeof FileRef>;
+
+/** Slug pattern shared across user-supplied IDs. */
+const Slug = z
+	.string()
+	.min(1)
+	.max(80)
+	.regex(/^[a-z0-9][a-z0-9-]*$/, "must be lowercase kebab-case slug");
+
+// ---- Domain objects -------------------------------------------------------
+
+/**
+ * Why a chunk is in the review. `kind` lets the UI render hint badges.
+ * - `change`: the actual modified hunk(s) for this region.
+ * - `context`: unchanged code the agent pulled in to support a finding (e.g. a caller).
+ */
+export const ChunkKind = z.enum(["change", "context"]);
+export type ChunkKind = z.infer<typeof ChunkKind>;
+
+export const Chunk = z.object({
+	id: Slug,
+	groupId: Slug,
+	file: FileRef,
+	/** Range on the base revision. Empty range means "no base side" (pure addition). */
+	baseRange: LineRange,
+	/** Range on the head revision. Empty range means "no head side" (pure deletion). */
+	headRange: LineRange,
+	kind: ChunkKind,
+	/** Optional one-line caption shown above the diff in the UI. */
+	caption: z.string().max(280).optional(),
+});
+export type Chunk = z.infer<typeof Chunk>;
+
+/**
+ * A finding is the agent's observation about a group. It's the "comment" of classic review
+ * tools but lifted to group level. Fine-grained per-line callouts are `InlineComment`s.
+ */
+export const Finding = z.object({
+	id: Slug,
+	groupId: Slug,
+	severity: Severity,
+	title: z.string().min(1).max(200),
+	body: z.string().min(1).max(8000),
+	/** Optional references to specific chunks or external URLs. */
+	refs: z
+		.array(
+			z.union([
+				z.object({ kind: z.literal("chunk"), chunkId: Slug }),
+				z.object({ kind: z.literal("url"), url: z.string().url(), label: z.string().optional() }),
+			]),
+		)
+		.default([]),
+});
+export type Finding = z.infer<typeof Finding>;
+
+export const InlineComment = z.object({
+	id: Slug,
+	chunkId: Slug,
+	/** Line number on the chosen side (1-based). */
+	line: z.number().int().min(1),
+	side: z.enum(["base", "head"]),
+	body: z.string().min(1).max(4000),
+	severity: Severity,
+});
+export type InlineComment = z.infer<typeof InlineComment>;
+
+/**
+ * A group is the unit of the "story" — a coherent theme the agent identifies (e.g. "auth refactor",
+ * "test coverage", "subtle race in cache").
+ */
+export const Group = z.object({
+	id: Slug,
+	title: z.string().min(1).max(200),
+	/** Free-form short label for visual clustering ("refactor", "feature", "test", "perf", ...). */
+	theme: z.string().min(1).max(40),
+	severity: Severity,
+	narrative: z.string().max(8000),
+	/** Order is meaningful — agent chooses presentation order within the group. */
+	chunkIds: z.array(Slug).default([]),
+	findingIds: z.array(Slug).default([]),
+	commentIds: z.array(Slug).default([]),
+});
+export type Group = z.infer<typeof Group>;
+
+export const ReviewStatus = z.enum(["pending", "running", "finalized", "failed"]);
+export type ReviewStatus = z.infer<typeof ReviewStatus>;
+
+/**
+ * Snapshot returned by `GET /reviews/:id`. The DO holds this shape directly.
+ */
+export const Review = z.object({
+	id: z.string(),
+	repo: z
+		.object({
+			/** Optional remote URL (origin) for display only. */
+			remoteUrl: z.string().optional(),
+			branch: z.string().optional(),
+		})
+		.default({}),
+	base: z.object({
+		ref: z.string(),
+		sha: z.string(),
+	}),
+	head: z.object({
+		ref: z.string(),
+		sha: z.string(),
+	}),
+	status: ReviewStatus,
+	summary: z.string().max(16000).optional(),
+	groups: z.array(Group).default([]),
+	chunks: z.array(Chunk).default([]),
+	findings: z.array(Finding).default([]),
+	comments: z.array(InlineComment).default([]),
+	createdAt: z.string().datetime(),
+	finalizedAt: z.string().datetime().optional(),
+	/** Server-side error if `status === "failed"`. */
+	error: z.string().optional(),
+});
+export type Review = z.infer<typeof Review>;
+
+// ---- Tool inputs ----------------------------------------------------------
+
+/**
+ * MCP tool inputs. Each schema mirrors the corresponding write the DO performs.
+ * The Worker enforces:
+ * - reviewId is taken from the JWT, not from tool args.
+ * - Slugs are unique per-review per-collection (groups/chunks/findings/comments).
+ * - Foreign-key refs (chunkId, groupId) must already exist on the review.
+ */
+
+export const DefineGroupInput = z.object({
+	id: Slug,
+	title: z.string().min(1).max(200),
+	theme: z.string().min(1).max(40),
+	severity: Severity,
+	narrative: z.string().max(8000).default(""),
+});
+export type DefineGroupInput = z.infer<typeof DefineGroupInput>;
+
+export const AddChunkInput = z.object({
+	id: Slug,
+	groupId: Slug,
+	file: FileRef,
+	baseRange: LineRange,
+	headRange: LineRange,
+	kind: ChunkKind,
+	caption: z.string().max(280).optional(),
+});
+export type AddChunkInput = z.infer<typeof AddChunkInput>;
+
+export const AddFindingInput = z.object({
+	id: Slug,
+	groupId: Slug,
+	severity: Severity,
+	title: z.string().min(1).max(200),
+	body: z.string().min(1).max(8000),
+	refs: Finding.shape.refs.optional(),
+});
+export type AddFindingInput = z.infer<typeof AddFindingInput>;
+
+export const AddInlineCommentInput = z.object({
+	id: Slug,
+	chunkId: Slug,
+	line: z.number().int().min(1),
+	side: z.enum(["base", "head"]),
+	body: z.string().min(1).max(4000),
+	severity: Severity,
+});
+export type AddInlineCommentInput = z.infer<typeof AddInlineCommentInput>;
+
+export const SetNarrativeInput = z.object({
+	summary: z.string().min(1).max(16000),
+});
+export type SetNarrativeInput = z.infer<typeof SetNarrativeInput>;
+
+export const FinalizeReviewInput = z.object({
+	summary: z.string().max(16000).optional(),
+});
+export type FinalizeReviewInput = z.infer<typeof FinalizeReviewInput>;
+
+// ---- Worker HTTP I/O ------------------------------------------------------
+
+/**
+ * Body for `POST /reviews`. The CLI sends a description of the diff to be reviewed; the Worker
+ * mints a reviewId and a JWT scoped to it.
+ */
+export const CreateReviewBody = z.object({
+	repo: Review.shape.repo.optional(),
+	base: Review.shape.base,
+	head: Review.shape.head,
+});
+export type CreateReviewBody = z.infer<typeof CreateReviewBody>;
+
+export const CreateReviewResponse = z.object({
+	reviewId: z.string(),
+	jwt: z.string(),
+	mcpUrl: z.string().url(),
+	reviewUrl: z.string().url(),
+	expiresAt: z.string().datetime(),
+});
+export type CreateReviewResponse = z.infer<typeof CreateReviewResponse>;
+
+/**
+ * Events emitted on `GET /reviews/:id/events` (SSE). The `event` field is the SSE event name;
+ * `data` is JSON-serialized.
+ */
+export const ReviewEvent = z.discriminatedUnion("type", [
+	z.object({ type: z.literal("snapshot"), review: Review }),
+	z.object({ type: z.literal("group_added"), group: Group }),
+	z.object({ type: z.literal("chunk_added"), chunk: Chunk }),
+	z.object({ type: z.literal("finding_added"), finding: Finding }),
+	z.object({ type: z.literal("comment_added"), comment: InlineComment }),
+	z.object({ type: z.literal("narrative_set"), summary: z.string() }),
+	z.object({ type: z.literal("finalized"), summary: z.string().optional() }),
+	z.object({ type: z.literal("failed"), error: z.string() }),
+]);
+export type ReviewEvent = z.infer<typeof ReviewEvent>;

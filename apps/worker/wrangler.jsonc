@@ -1,0 +1,47 @@
+/**
+ * Worker for review-agent.
+ *
+ * - `ReviewAgent` Durable Object: one instance per review (keyed by reviewId).
+ *   Uses SQLite-backed storage (new_sqlite_classes migration).
+ * - Static assets binding for the React+Vite SPA at apps/web/dist.
+ * - Routes (handled by Worker; everything else falls through to assets):
+ *     POST  /reviews                  mint reviewId + JWT
+ *     GET   /reviews/:id              JSON snapshot
+ *     GET   /reviews/:id/events       SSE stream
+ *     POST  /mcp                      MCP server (streamable-HTTP, JWT-auth'd)
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "review-agent-worker",
+	"main": "src/worker.ts",
+	"compatibility_date": "2026-04-25",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": { "enabled": true },
+	"upload_source_maps": true,
+
+	"durable_objects": {
+		"bindings": [{ "name": "ReviewAgent", "class_name": "ReviewAgent" }]
+	},
+
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ReviewAgent"] }],
+
+	/**
+	 * SPA assets. apps/web/dist is the Vite build output (created by `pnpm --filter
+	 * @review-agent/web build`). With `not_found_handling: "single-page-application"`
+	 * navigation requests for /r/:id automatically serve index.html without invoking
+	 * the Worker.
+	 */
+	"assets": {
+		"directory": "../web/dist",
+		"binding": "ASSETS",
+		"not_found_handling": "single-page-application"
+	},
+
+	/**
+	 * Public base URL used when minting `reviewUrl` and `mcpUrl` in POST /reviews.
+	 * Override per environment with `wrangler.jsonc` env stanzas or via env vars.
+	 */
+	"vars": {
+		"PUBLIC_BASE_URL": "http://localhost:8787"
+	}
+}
