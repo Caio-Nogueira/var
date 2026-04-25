@@ -1,8 +1,9 @@
 import { GroupSection } from "../components/GroupSection.js";
-import { Markdown } from "../components/Markdown.js";
+import { ProgressBanner } from "../components/ProgressBanner.js";
 import { ReviewHeader } from "../components/ReviewHeader.js";
 import { Sidebar } from "../components/Sidebar.js";
 import { useReviewStream } from "../state/useReviewStream.js";
+import type { Review } from "../types.js";
 import { NotFoundPage } from "./NotFoundPage.js";
 
 interface Props {
@@ -12,12 +13,13 @@ interface Props {
 /**
  * The review viewer. Owns the SSE connection. Renders four states explicitly:
  * - bootstrapping (no snapshot yet)
- * - empty (snapshot present, no groups yet)
- * - populated (one or more groups)
- * - terminal (finalized or failed)
+ * - in-flight (pending or running) — header + progress banner only; structural content hidden
+ * - finalized — full structural view (groups, chunks, findings)
+ * - failed — failure banner; if the agent had assigned chunks before failing, render those
+ *   groups too with an "incomplete review" notice; otherwise show only the banner
  */
 export function ReviewPage({ reviewId }: Props) {
-	const { review, connection, lastDelta } = useReviewStream(reviewId);
+	const { review, connection } = useReviewStream(reviewId);
 
 	if (connection === "not_found") {
 		return <NotFoundPage reviewId={reviewId} />;
@@ -27,40 +29,79 @@ export function ReviewPage({ reviewId }: Props) {
 		return <Bootstrapping />;
 	}
 
+	const stage = stageFor(review);
+
 	return (
 		<div className="min-h-screen">
 			<ReviewHeader review={review} connection={connection} />
 
 			<div className="mx-auto flex max-w-[1280px]">
-				<Sidebar review={review} />
+				{stage === "structural" && <Sidebar review={review} />}
 
 				<main className="flex-1 px-6 md:px-10 py-8 min-w-0">
-					{review.status === "failed" && review.error && <FailureBanner error={review.error} />}
+					{stage === "failed-empty" && review.error && <FailureBanner error={review.error} />}
 
-					{review.summary && (
+					{stage === "structural" && review.summary && (
 						<section className="mb-10">
 							<h2 className="text-xs uppercase tracking-[0.18em]" style={{ color: "var(--color-ink-3)" }}>
 								Summary
 							</h2>
-							<div className="mt-3">
-								<Markdown fontSize="var(--text-lg)">{review.summary}</Markdown>
-							</div>
+							<p
+								className="mt-3 italic"
+								style={{
+									color: "var(--color-ink)",
+									fontSize: "var(--text-lg)",
+									maxWidth: "62ch",
+									lineHeight: 1.55,
+								}}
+							>
+								{review.summary}
+							</p>
 						</section>
 					)}
 
-					{review.groups.length === 0 ? (
-						<EmptyState status={review.status} lastDelta={lastDelta} />
-					) : (
-						<div className="flex flex-col gap-16">
-							{review.groups.map((group) => (
-								<GroupSection key={group.id} group={group} review={review} />
-							))}
-						</div>
+					{stage === "structural-with-failure" && review.error && (
+						<>
+							<FailureBanner error={review.error} />
+							<IncompleteNotice />
+						</>
 					)}
+
+					{stage === "in-flight" && <ProgressBanner review={review} />}
+
+					{(stage === "structural" || stage === "structural-with-failure") &&
+						(review.groups.length === 0 ? (
+							<EmptyFinalized />
+						) : (
+							<div className="flex flex-col gap-16">
+								{review.groups.map((group) => (
+									<GroupSection key={group.id} group={group} review={review} />
+								))}
+							</div>
+						))}
 				</main>
 			</div>
 		</div>
 	);
+}
+
+/**
+ * Maps the review's lifecycle status to one of four rendering stages.
+ *
+ * `failed-empty` is distinct from `structural-with-failure` because a failure with no recorded
+ * chunks should not render an empty group list — there's nothing to show beyond the banner.
+ * Once the agent has assigned at least one chunk, partial work is visible (per the design).
+ *
+ * Exported so the rendering decision is testable as a pure function without needing a DOM.
+ */
+export type Stage = "in-flight" | "structural" | "structural-with-failure" | "failed-empty";
+
+export function stageFor(review: Review): Stage {
+	if (review.status === "finalized") return "structural";
+	if (review.status === "failed") {
+		return review.chunks.length > 0 ? "structural-with-failure" : "failed-empty";
+	}
+	return "in-flight";
 }
 
 function Bootstrapping() {
@@ -73,21 +114,7 @@ function Bootstrapping() {
 	);
 }
 
-function EmptyState({
-	status,
-	lastDelta,
-}: {
-	status: import("../types.js").ReviewStatus;
-	lastDelta: import("../types.js").ReviewEvent["type"] | null;
-}) {
-	const message =
-		status === "pending"
-			? "Waiting for the agent to start."
-			: status === "running"
-				? "Reading the diff. Findings will appear here as they're written."
-				: status === "finalized"
-					? "This review finished without findings."
-					: "Review failed before producing any output.";
+function EmptyFinalized() {
 	return (
 		<div
 			className="rounded p-10 text-center"
@@ -97,13 +124,23 @@ function EmptyState({
 			}}
 		>
 			<p className="italic" style={{ color: "var(--color-ink-2)", fontSize: "var(--text-lg)" }}>
-				{message}
+				This review finished without findings.
 			</p>
-			{lastDelta && lastDelta !== "snapshot" && (
-				<p className="mt-3 font-mono text-xs" style={{ color: "var(--color-ink-4)" }}>
-					last event · {lastDelta}
-				</p>
-			)}
+		</div>
+	);
+}
+
+function IncompleteNotice() {
+	return (
+		<div
+			className="rounded p-3 mb-8 text-sm"
+			style={{
+				border: "1px solid var(--color-line)",
+				backgroundColor: "var(--color-surface-2)",
+				color: "var(--color-ink-2)",
+			}}
+		>
+			Showing partial review work below — the agent failed before completing every group.
 		</div>
 	);
 }

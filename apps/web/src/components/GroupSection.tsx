@@ -9,9 +9,12 @@ interface Props {
 }
 
 /**
- * One group section. Order children by the projection ids on the group itself (chunkIds,
- * findingIds, commentIds) — the worker rebuilds these from persisted insert order, which is
- * what the agent intended.
+ * One group section. Reading order is narrative → chunks → findings: the human sees the
+ * code first, then the agent's commentary on it. Group narrative is required (schema-enforced)
+ * so no presence guard is needed.
+ *
+ * Order children by the projection ids on the group itself (chunkIds, findingIds, commentIds) —
+ * the worker rebuilds these from persisted insert order, which is what the agent intended.
  */
 export function GroupSection({ group, review }: Props) {
 	const chunks = pickByIds(review.chunks, group.chunkIds);
@@ -53,20 +56,20 @@ export function GroupSection({ group, review }: Props) {
 				</p>
 			)}
 
-			{findings.length > 0 && (
-				<div className="mt-6 flex flex-col gap-3">
-					{findings.map((finding) => (
-						<FindingCard key={finding.id} finding={finding} />
-					))}
-				</div>
-			)}
-
 			{chunks.length > 0 && (
 				<div className="mt-6 flex flex-col gap-4">
 					{chunks.map((chunk) => (
 						<div key={chunk.id} id={`chunk-${chunk.id}`} className="scroll-mt-24">
 							<ChunkView chunk={chunk} comments={commentsByChunk.get(chunk.id) ?? []} />
 						</div>
+					))}
+				</div>
+			)}
+
+			{findings.length > 0 && (
+				<div className="mt-6 flex flex-col gap-3">
+					{findings.map((finding) => (
+						<FindingCard key={finding.id} finding={finding} />
 					))}
 				</div>
 			)}
