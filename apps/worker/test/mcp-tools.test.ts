@@ -44,6 +44,20 @@ describe("Worker MCP review tools", () => {
 				"finalize_review",
 				"set_narrative",
 			]);
+			// Tool descriptions co-author the prompt — they're what the agent reads inside MCP
+			// `tools/list`. Pin the phrases that encode the new behavioral contract so a future
+			// edit can't silently drop them.
+			const byName = new Map(tools.tools.map((t) => [t.name, t.description ?? ""]));
+			const defineGroupDesc = byName.get("define_group") ?? "";
+			expect(defineGroupDesc.toLowerCase()).toContain("objective");
+			expect(defineGroupDesc.toLowerCase()).toContain("adjectives");
+			const addChunkDesc = byName.get("add_chunk") ?? "";
+			expect(addChunkDesc.toLowerCase()).toContain("every hunk");
+			const addFindingDesc = byName.get("add_finding") ?? "";
+			expect(addFindingDesc.toLowerCase()).toContain("one sentence");
+			expect(addFindingDesc).toContain("1500");
+			const addInlineDesc = byName.get("add_inline_comment") ?? "";
+			expect(addInlineDesc.toLowerCase()).toContain("wayfinding");
 
 			await callOk(client, "define_group", {
 				id: "auth-refactor",

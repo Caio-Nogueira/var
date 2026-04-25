@@ -47,8 +47,12 @@ function buildServer(agent: ReviewAgent): McpServer {
 		"define_group",
 		{
 			description:
-				"Create a thematic group (e.g. 'auth refactor', 'test coverage'). Findings, chunks, " +
-				"and comments attach to a group. Each id must be a unique kebab-case slug for this review.",
+				"Define a thematic group with a non-empty narrative (1-2 sentences) describing what " +
+				"the hunks DO collectively. Group names must be OBJECTIVE and SEMANTIC — describe the " +
+				"code, not its quality. No adjectives. No editorial judgment. " +
+				"Good: 'new foo rpc call', 'wrangler configuration changes', 'metrics overhaul'. " +
+				"Bad: 'code quality', 'improvements', 'subtle race', 'auth cleanup'. " +
+				"Each id must be a unique kebab-case slug for this review.",
 			inputSchema: DefineGroupInput.shape,
 		},
 		async (raw) => {
@@ -71,8 +75,10 @@ function buildServer(agent: ReviewAgent): McpServer {
 		"add_chunk",
 		{
 			description:
-				"Attach a code chunk to a group with structured diff hunks for UI rendering. " +
-				"Each hunk line must include kind, raw content without +/- prefix, and base/head line anchors. " +
+				"Record one hunk from the diff against a group. Every hunk in `git diff base..head` " +
+				"must end up in some group's chunks before `finalize_review` — do not skip files even " +
+				"if they look mechanical. Each hunk line must include kind, raw content without +/- " +
+				"prefix, and base/head line anchors. " +
 				"For additions use basePath:null, an empty baseRange, and add lines with baseLine:null. " +
 				"For deletions use headPath:null, an empty headRange, and delete lines with headLine:null. " +
 				"For renames set both paths. Redact secret-like line content but keep line anchors.",
@@ -103,8 +109,11 @@ function buildServer(agent: ReviewAgent): McpServer {
 		"add_finding",
 		{
 			description:
-				"Attach a group-level finding (must_fix | should_fix | consider | nit). Findings are " +
-				"the primary review output. Use refs to link findings to specific chunks or URLs.",
+				"Attach a brief, actionable observation to a group. Aim for ONE sentence; the hard " +
+				"body cap is 1500 chars but most findings should be far shorter. Lead with the " +
+				"actionable point. A finding asks the author to do something — if you wouldn't change " +
+				"the PR over it, don't write one. Severity (must_fix | should_fix | consider | nit) " +
+				"is required. Use refs to anchor to specific chunks or URLs.",
 			inputSchema: AddFindingInput.shape,
 		},
 		async (raw) => {
@@ -129,8 +138,8 @@ function buildServer(agent: ReviewAgent): McpServer {
 		"add_inline_comment",
 		{
 			description:
-				"Attach a per-line inline comment to a chunk. Use this for fine-grained callouts on " +
-				"specific lines. Higher-level observations belong in `add_finding`.",
+				"Wayfinding pin on a specific line — points the reader at something noteworthy. " +
+				"NOT for calls to action; those go in `add_finding`. Use rarely; most reviews need none.",
 			inputSchema: AddInlineCommentInput.shape,
 		},
 		async (raw) => {
@@ -156,8 +165,9 @@ function buildServer(agent: ReviewAgent): McpServer {
 		"set_narrative",
 		{
 			description:
-				"Set the top-level review summary. Call this near the end of the review with the " +
-				"narrative tying the groups together.",
+				"Set the review-level summary (1-2 sentences) tying the groups together. This is the " +
+				"first thing the human reads. Different from per-group narratives, which are set in " +
+				"`define_group`.",
 			inputSchema: SetNarrativeInput.shape,
 		},
 		async (raw) => {
@@ -171,8 +181,9 @@ function buildServer(agent: ReviewAgent): McpServer {
 		"finalize_review",
 		{
 			description:
-				"Mark the review as finalized. Optionally provide a final summary which overwrites " +
-				"any previously-set narrative. Call this exactly once when the review is complete.",
+				"Mark the review complete. Call exactly once when every hunk in the diff is in some " +
+				"group's chunks. Optionally provide a final summary which overwrites any previously-set " +
+				"narrative.",
 			inputSchema: FinalizeReviewInput.shape,
 		},
 		async (raw) => {
