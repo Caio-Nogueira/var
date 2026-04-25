@@ -58,7 +58,7 @@ function buildServer(agent: ReviewAgent): McpServer {
 				title: input.title,
 				theme: input.theme,
 				severity: input.severity,
-				narrative: input.narrative ?? "",
+				narrative: input.narrative,
 				chunkIds: [],
 				findingIds: [],
 				commentIds: [],

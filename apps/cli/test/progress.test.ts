@@ -11,7 +11,7 @@ describe("formatProgressEvent", () => {
 					title: "Auth changes",
 					theme: "auth",
 					severity: "should_fix",
-					narrative: "",
+					narrative: "Modifies the auth verifier path.",
 					chunkIds: [],
 					findingIds: [],
 					commentIds: [],

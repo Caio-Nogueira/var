@@ -32,6 +32,42 @@ describe("schema smoke", () => {
 				title: "x",
 				theme: "refactor",
 				severity: "nit",
+				narrative: "x",
+			}),
+		).toThrow();
+	});
+
+	it("DefineGroupInput requires a non-empty narrative", () => {
+		// Empty string used to be the default; the schema now rejects it so the agent gets a loud
+		// tool error instead of a silently-empty group narrative reaching the SPA.
+		expect(() =>
+			DefineGroupInput.parse({
+				id: "auth-refactor",
+				title: "Auth refactor",
+				theme: "refactor",
+				severity: "should_fix",
+				narrative: "",
+			}),
+		).toThrow();
+		// Field omitted entirely is also rejected — the previous default("") is gone.
+		expect(() =>
+			DefineGroupInput.parse({
+				id: "auth-refactor",
+				title: "Auth refactor",
+				theme: "refactor",
+				severity: "should_fix",
+			}),
+		).toThrow();
+	});
+
+	it("DefineGroupInput rejects narratives that exceed the 4000-char cap", () => {
+		expect(() =>
+			DefineGroupInput.parse({
+				id: "auth-refactor",
+				title: "Auth refactor",
+				theme: "refactor",
+				severity: "should_fix",
+				narrative: "x".repeat(4001),
 			}),
 		).toThrow();
 	});
@@ -45,6 +81,28 @@ describe("schema smoke", () => {
 			body: "The token can be undefined here.",
 		});
 		expect(parsed.refs).toBeUndefined();
+	});
+
+	it("AddFindingInput caps body at 1500 chars (brevity contract)", () => {
+		// 1500 fits — boundary case for the ceiling.
+		const ok = AddFindingInput.parse({
+			id: "long-but-legal",
+			groupId: "auth-refactor",
+			severity: "consider",
+			title: "Long but legal",
+			body: "x".repeat(1500),
+		});
+		expect(ok.body.length).toBe(1500);
+		// 1501 fails. The cap is the brevity ceiling that the prompt asks the agent to stay far under.
+		expect(() =>
+			AddFindingInput.parse({
+				id: "too-long",
+				groupId: "auth-refactor",
+				severity: "consider",
+				title: "Too long",
+				body: "x".repeat(1501),
+			}),
+		).toThrow();
 	});
 
 	it("AddChunkInput allows pure-addition (empty base range)", () => {

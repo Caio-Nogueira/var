@@ -124,13 +124,17 @@ export type Chunk = z.infer<typeof Chunk>;
 /**
  * A finding is the agent's observation about a group. It's the "comment" of classic review
  * tools but lifted to group level. Fine-grained per-line callouts are `InlineComment`s.
+ *
+ * Body is hard-capped at 1500 chars. The cap is a ceiling, not a target — most findings should
+ * fit in one or two sentences. Brevity is enforced at the schema layer so a long-winded agent
+ * gets a tool error rather than a wall of text in the UI.
  */
 export const Finding = z.object({
 	id: Slug,
 	groupId: Slug,
 	severity: Severity,
 	title: z.string().min(1).max(200),
-	body: z.string().min(1).max(8000),
+	body: z.string().min(1).max(1500),
 	/** Optional references to specific chunks or external URLs. */
 	refs: z
 		.array(
@@ -155,8 +159,11 @@ export const InlineComment = z.object({
 export type InlineComment = z.infer<typeof InlineComment>;
 
 /**
- * A group is the unit of the "story" — a coherent theme the agent identifies (e.g. "auth refactor",
- * "test coverage", "subtle race in cache").
+ * A group is the unit of the "story" — a coherent theme the agent identifies. Names should be
+ * objective and semantic ("new foo rpc call", "metrics overhaul", "wrangler configuration
+ * changes") — never editorial or pre-biasing ("subtle race", "auth cleanup", "various"). The
+ * narrative is required and capped short on purpose: 1-2 sentences explaining what the hunks
+ * collectively DO, not whether they're good.
  */
 export const Group = z.object({
 	id: Slug,
@@ -164,7 +171,7 @@ export const Group = z.object({
 	/** Free-form short label for visual clustering ("refactor", "feature", "test", "perf", ...). */
 	theme: z.string().min(1).max(40),
 	severity: Severity,
-	narrative: z.string().max(8000),
+	narrative: z.string().min(1).max(4000),
 	/** Order is meaningful — agent chooses presentation order within the group. */
 	chunkIds: z.array(Slug).default([]),
 	findingIds: z.array(Slug).default([]),
@@ -223,7 +230,12 @@ export const DefineGroupInput = z.object({
 	title: z.string().min(1).max(200),
 	theme: z.string().min(1).max(40),
 	severity: Severity,
-	narrative: z.string().max(8000).default(""),
+	/**
+	 * Required, non-empty. The agent gets a tool error if it tries to define a group without a
+	 * narrative — better feedback than a silent empty string. 1-2 sentences expected; cap is a
+	 * ceiling, not a target.
+	 */
+	narrative: z.string().min(1).max(4000),
 });
 export type DefineGroupInput = z.infer<typeof DefineGroupInput>;
 
@@ -244,7 +256,7 @@ export const AddFindingInput = z.object({
 	groupId: Slug,
 	severity: Severity,
 	title: z.string().min(1).max(200),
-	body: z.string().min(1).max(8000),
+	body: z.string().min(1).max(1500),
 	refs: Finding.shape.refs.optional(),
 });
 export type AddFindingInput = z.infer<typeof AddFindingInput>;
