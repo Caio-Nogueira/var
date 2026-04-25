@@ -88,11 +88,23 @@ Things that should land before you point teammates at it.
       JWTs scoped to a *different* review id on the lifecycle path; concurrent finalize+fail race
       coverage.
 
-- [ ] **Visual polish on the SPA.** Two rough edges I called out after seeing screenshots:
+- [ ] **Visual polish on the SPA.** Tracked separately from Phase 1. Two confirmed nits plus the
+      diagnosis batch I called out during planning:
       - The hunk header band and the chunk caption band share `surface-2` and visually merge.
         Differentiate the caption (lighter or remove the band entirely; rely on italic + spacing).
-      - Finding card refs (e.g. `verifier-fn`) read as orphaned tokens. Prefix with `↳` or
-        `chunk →` so they read as navigation.
+      - Finding card refs (e.g. `verifier-fn`) read as orphaned tokens. Resolve to file:line
+        from review state and prefix with `↳`.
+      - Severity-tinted left border on finding cards so a vertical scan reveals priority.
+      - Multi-hunk separator gap (currently a 1px line collapses into the next header).
+      - `+/-` prefix glyph contrast bumped from `ink-4` to `ink-3` (or per-kind tint).
+      - Theme tag in the group header reads as part of the title; reposition right or drop.
+
+- [ ] **Phase 2 (structural completeness contract).** Only if Phase 1 prompt compliance proves
+      insufficient. CLI parses the full diff and POSTs chunks at review creation; agent stops
+      calling `add_chunk` and gains `assign_chunks_to_group`; `finalize_review` rejects unless
+      every chunk has a `groupId`. Plan shape sketched in
+      `docs/plans/2026-04-25-002-feat-review-output-quality-and-progress-ux-plan.md` under
+      "Deferred to Follow-Up Work".
 
 ---
 

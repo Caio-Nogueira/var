@@ -1,4 +1,4 @@
-# review-agent — checkpoint (2026-04-25)
+# review-agent — checkpoint (2026-04-26)
 
 ## Vision
 
@@ -23,7 +23,19 @@ local                                       Cloudflare
 +------------------+                        +------------------------+
 ```
 
-## Status: Milestone 1 (Worker) — DONE, verified end-to-end
+## Status
+
+- **Milestone 1 (Worker + MCP + SSE):** DONE.
+- **Milestone 2 (SPA):** DONE. React + Vite + Tailwind viewer at `/r/:id`.
+- **Milestone 3 (CLI):** DONE. OpenCode orchestration with mock and real binaries.
+- **Phase 1 (review output quality + progress UX):** DONE. See
+  `docs/plans/2026-04-25-002-feat-review-output-quality-and-progress-ux-plan.md`.
+  - Objective-group prompt, brevity contract (`Finding.body` ≤ 1500, `Group.narrative` required).
+  - `totalFiles` end-to-end so the SPA renders `X of Y files processed`.
+  - SPA hides chunks/findings until `finalized`; partial work shown on `failed`.
+  - Within a group: narrative → chunks → findings.
+- **Phase 2 (structural completeness contract):** deferred. Pulled off the shelf only if real
+  diffs reveal the agent silently dropping files.
 
 `apps/worker/scripts/smoke.ts` exercises the full flow against `wrangler dev` (already passing).
 
