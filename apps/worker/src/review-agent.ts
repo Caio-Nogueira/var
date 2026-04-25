@@ -12,16 +12,16 @@
  * NOTE: SSE keeps the DO awake. For multi-hour idle reviews, switch to WebSocket Hibernation.
  */
 
-import { Agent, type AgentContext } from "agents";
-import {
-	type Chunk,
-	type Finding,
-	type Group,
-	type InlineComment,
-	type Review,
-	type ReviewEvent,
-	type ReviewStatus,
+import type {
+	Chunk,
+	Finding,
+	Group,
+	InlineComment,
+	Review,
+	ReviewEvent,
+	ReviewStatus,
 } from "@review-agent/schema";
+import { Agent, type AgentContext } from "agents";
 import { handleMcpRequest } from "./mcp.js";
 
 export interface ReviewAgentEnv {
@@ -83,6 +83,8 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 		switch (url.pathname) {
 			case "/__init":
 				return this.handleInit(request);
+			case "/__lifecycle":
+				return this.handleLifecycle(request);
 			case "/__snapshot":
 				return this.handleSnapshot();
 			case "/__events":
@@ -110,7 +112,10 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 		const existing = this.readMeta();
 		if (existing) return new Response("already initialized", { status: 409 });
 
-		const body = (await request.json()) as Pick<Review, "id" | "repo" | "base" | "head" | "createdAt">;
+		const body = (await request.json()) as Pick<
+			Review,
+			"id" | "repo" | "base" | "head" | "createdAt"
+		>;
 		const meta: MetaRow = {
 			id: body.id,
 			repo: body.repo,
@@ -123,6 +128,17 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 		const projected = this.project(meta);
 		this.setState(projected);
 		return Response.json(projected);
+	}
+
+	private async handleLifecycle(request: Request): Promise<Response> {
+		const meta = this.readMeta();
+		if (!meta) return new Response("not found", { status: 404 });
+
+		const body = (await request.json()) as
+			| { status: "running" }
+			| { status: "failed"; error: string };
+		if (body.status === "running") return Response.json(this.markRunning(meta));
+		return Response.json(this.markFailed(body.error, meta));
 	}
 
 	private handleEvents(request: Request): Response {
@@ -164,7 +180,7 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 	 * Returns the persisted group so callers can echo it.
 	 */
 	defineGroup(group: Group): Group {
-		this.requireInitialized();
+		this.requireWritable();
 		try {
 			this.sql`INSERT INTO groups (id, json) VALUES (${group.id}, ${JSON.stringify(group)})`;
 		} catch (err) {
@@ -175,10 +191,11 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 	}
 
 	addChunk(chunk: Chunk): Chunk {
-		this.requireInitialized();
+		this.requireWritable();
 		this.requireGroupExists(chunk.groupId);
 		try {
-			this.sql`INSERT INTO chunks (id, group_id, json) VALUES (${chunk.id}, ${chunk.groupId}, ${JSON.stringify(chunk)})`;
+			this
+				.sql`INSERT INTO chunks (id, group_id, json) VALUES (${chunk.id}, ${chunk.groupId}, ${JSON.stringify(chunk)})`;
 		} catch (err) {
 			throw collisionFor("chunk", chunk.id, err);
 		}
@@ -187,10 +204,11 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 	}
 
 	addFinding(finding: Finding): Finding {
-		this.requireInitialized();
+		this.requireWritable();
 		this.requireGroupExists(finding.groupId);
 		try {
-			this.sql`INSERT INTO findings (id, group_id, json) VALUES (${finding.id}, ${finding.groupId}, ${JSON.stringify(finding)})`;
+			this
+				.sql`INSERT INTO findings (id, group_id, json) VALUES (${finding.id}, ${finding.groupId}, ${JSON.stringify(finding)})`;
 		} catch (err) {
 			throw collisionFor("finding", finding.id, err);
 		}
@@ -199,10 +217,11 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 	}
 
 	addInlineComment(comment: InlineComment): InlineComment {
-		this.requireInitialized();
+		this.requireWritable();
 		this.requireChunkExists(comment.chunkId);
 		try {
-			this.sql`INSERT INTO comments (id, chunk_id, json) VALUES (${comment.id}, ${comment.chunkId}, ${JSON.stringify(comment)})`;
+			this
+				.sql`INSERT INTO comments (id, chunk_id, json) VALUES (${comment.id}, ${comment.chunkId}, ${JSON.stringify(comment)})`;
 		} catch (err) {
 			throw collisionFor("comment", comment.id, err);
 		}
@@ -211,13 +230,13 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 	}
 
 	setNarrative(summary: string): void {
-		const meta = this.requireInitialized();
+		const meta = this.requireWritable();
 		this.writeMeta({ ...meta, summary });
 		this.afterMutation({ type: "narrative_set", summary });
 	}
 
 	finalize(summary: string | undefined): void {
-		const meta = this.requireInitialized();
+		const meta = this.requireWritable();
 		const next: MetaRow = {
 			...meta,
 			status: "finalized",
@@ -227,6 +246,24 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 		if (effective !== undefined) next.summary = effective;
 		this.writeMeta(next);
 		this.afterMutation({ type: "finalized", ...(summary !== undefined ? { summary } : {}) });
+	}
+
+	markRunning(meta = this.requireInitialized()): ReviewAgentState {
+		if (isTerminal(meta.status)) return this.project(meta);
+		if (meta.status === "running") return this.project(meta);
+		const next: MetaRow = { ...meta, status: "running" };
+		this.writeMeta(next);
+		const projected = this.project(next);
+		this.setState(projected);
+		return projected;
+	}
+
+	markFailed(error: string, meta = this.requireInitialized()): ReviewAgentState {
+		if (isTerminal(meta.status)) return this.project(meta);
+		const next: MetaRow = { ...meta, status: "failed", error };
+		this.writeMeta(next);
+		this.afterMutation({ type: "failed", error });
+		return this.project(next);
 	}
 
 	// ---- Helpers ----------------------------------------------------------
@@ -277,6 +314,12 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 	private requireInitialized(): MetaRow {
 		const meta = this.readMeta();
 		if (!meta) throw new Error("review not initialized");
+		return meta;
+	}
+
+	private requireWritable(): MetaRow {
+		const meta = this.requireInitialized();
+		if (isTerminal(meta.status)) throw new Error(`review is terminal: ${meta.status}`);
 		return meta;
 	}
 
@@ -349,15 +392,16 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 
 class ConflictError extends Error {
 	override readonly name = "ConflictError";
-	constructor(message: string) {
-		super(message);
-	}
 }
 
 function collisionFor(kind: string, id: string, err: unknown): Error {
 	const message = err instanceof Error ? err.message : String(err);
 	if (message.includes("UNIQUE")) return new ConflictError(`${kind} id already exists: ${id}`);
 	return err instanceof Error ? err : new Error(message);
+}
+
+function isTerminal(status: ReviewStatus): boolean {
+	return status === "finalized" || status === "failed";
 }
 
 export { ConflictError };

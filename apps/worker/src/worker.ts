@@ -10,10 +10,15 @@
  * Static SPA falls through via `env.ASSETS.fetch` for everything else.
  */
 
+import {
+	CreateReviewBody,
+	type CreateReviewResponse,
+	ReviewLifecycleBody,
+} from "@review-agent/schema";
 import { getAgentByName } from "agents";
-import { CreateReviewBody, type CreateReviewResponse } from "@review-agent/schema";
-import { authFromRequest, mintReviewToken } from "./jwt.js";
+import { Hono } from "hono";
 import { mintReviewId } from "./ids.js";
+import { authFromRequest, mintReviewToken } from "./jwt.js";
 
 import { ReviewAgent, type ReviewAgentEnv } from "./review-agent.js";
 
@@ -21,43 +26,26 @@ export { ReviewAgent };
 
 type Env = ReviewAgentEnv;
 
-export default {
-	async fetch(request, env, _ctx): Promise<Response> {
-		const url = new URL(request.url);
+const app = new Hono<{ Bindings: Env }>();
 
-		try {
-			if (url.pathname === "/reviews" && request.method === "POST") {
-				return await handleCreateReview(request, env);
-			}
+app.onError((err) => errorResponse(err));
 
-			const reviewMatch = url.pathname.match(/^\/reviews\/([^/]+)$/);
-			if (reviewMatch && request.method === "GET") {
-				return await handleGetReview(reviewMatch[1]!, env);
-			}
+app.post("/reviews", (c) => handleCreateReview(c.req.raw, c.env));
+app.get("/reviews/:id", (c) => handleGetReview(c.req.param("id"), c.env));
+app.get("/reviews/:id/events", (c) => handleEvents(c.req.raw, c.req.param("id"), c.env));
+app.post("/reviews/:id/lifecycle", (c) => handleLifecycle(c.req.raw, c.req.param("id"), c.env));
+app.all("/mcp", (c) => handleMcp(c.req.raw, c.env));
+// Healthcheck — handy for `curl localhost:8787/_healthz` while developing.
+app.get("/_healthz", () => new Response("ok", { headers: { "content-type": "text/plain" } }));
 
-			const eventsMatch = url.pathname.match(/^\/reviews\/([^/]+)\/events$/);
-			if (eventsMatch && request.method === "GET") {
-				return await handleEvents(request, eventsMatch[1]!, env);
-			}
+app.notFound((c) => {
+	// SPA fallthrough. With `not_found_handling: "single-page-application"` in wrangler.jsonc,
+	// `/r/:id` navigations are served `index.html` automatically. Other non-route requests fall
+	// through to the assets handler too.
+	return c.env.ASSETS.fetch(c.req.raw);
+});
 
-			if (url.pathname === "/mcp") {
-				return await handleMcp(request, env);
-			}
-
-			// Healthcheck — handy for `curl localhost:8787/_healthz` while developing.
-			if (url.pathname === "/_healthz") {
-				return new Response("ok", { headers: { "content-type": "text/plain" } });
-			}
-		} catch (err) {
-			return errorResponse(err);
-		}
-
-		// SPA fallthrough. With `not_found_handling: "single-page-application"` in wrangler.jsonc,
-		// `/r/:id` navigations are served `index.html` automatically — no code needed here. Other
-		// non-route requests (XHR for assets, etc.) get the assets handler too.
-		return env.ASSETS.fetch(request);
-	},
-} satisfies ExportedHandler<Env>;
+export default app satisfies ExportedHandler<Env>;
 
 // ---- Handlers ------------------------------------------------------------
 
@@ -69,7 +57,16 @@ async function handleCreateReview(request: Request, env: Env): Promise<Response>
 	}
 
 	const reviewId = mintReviewId();
-	const { jwt, expiresAt } = await mintReviewToken({ reviewId, secret: env.JWT_SECRET });
+	const { jwt, expiresAt } = await mintReviewToken({
+		reviewId,
+		secret: env.JWT_SECRET,
+		audience: "mcp",
+	});
+	const { jwt: lifecycleJwt } = await mintReviewToken({
+		reviewId,
+		secret: env.JWT_SECRET,
+		audience: "lifecycle",
+	});
 
 	// Initialize the DO with the review metadata. We do this synchronously so a subsequent
 	// `GET /reviews/:id` is never racy.
@@ -101,11 +98,34 @@ async function handleCreateReview(request: Request, env: Env): Promise<Response>
 	const response: CreateReviewResponse = {
 		reviewId,
 		jwt,
+		lifecycleJwt,
 		mcpUrl: `${base}/mcp`,
 		reviewUrl: `${base}/r/${reviewId}`,
 		expiresAt: expiresAt.toISOString(),
 	};
 	return Response.json(response, { status: 201 });
+}
+
+async function handleLifecycle(request: Request, reviewId: string, env: Env): Promise<Response> {
+	const claims = await authFromRequest(request, env.JWT_SECRET, "lifecycle");
+	if (!claims || claims.reviewId !== reviewId) return new Response("unauthorized", { status: 401 });
+
+	const raw = await request.json().catch(() => null);
+	const parsed = ReviewLifecycleBody.safeParse(raw);
+	if (!parsed.success) {
+		return Response.json({ error: "invalid_body", details: parsed.error.flatten() }, { status: 400 });
+	}
+
+	const stub = await getAgentByName(env.ReviewAgent, reviewId);
+	const res = await stub.fetch(
+		new Request("https://do/__lifecycle", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(parsed.data),
+		}),
+	);
+	if (res.status === 404) return new Response("not found", { status: 404 });
+	return res;
 }
 
 async function handleGetReview(reviewId: string, env: Env): Promise<Response> {
@@ -126,7 +146,7 @@ async function handleEvents(request: Request, reviewId: string, env: Env): Promi
 }
 
 async function handleMcp(request: Request, env: Env): Promise<Response> {
-	const claims = await authFromRequest(request, env.JWT_SECRET);
+	const claims = await authFromRequest(request, env.JWT_SECRET, "mcp");
 	if (!claims) return new Response("unauthorized", { status: 401 });
 
 	const stub = await getAgentByName(env.ReviewAgent, claims.reviewId);

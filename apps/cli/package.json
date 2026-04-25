@@ -1,0 +1,26 @@
+{
+	"name": "@review-agent/cli",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"bin": {
+		"review": "./src/main.ts"
+	},
+	"scripts": {
+		"review": "bun src/main.ts",
+		"check-types": "tsc --noEmit",
+		"test": "vitest run",
+		"test:e2e": "vitest run test/e2e"
+	},
+	"dependencies": {
+		"@review-agent/schema": "workspace:*",
+		"zod": "^3.23.8"
+	},
+	"devDependencies": {
+		"@modelcontextprotocol/sdk": "^1.29.0",
+		"@types/node": "^25.6.0",
+		"tsx": "^4.21.0",
+		"typescript": "^5.6.3",
+		"vitest": "^2.1.8"
+	}
+}

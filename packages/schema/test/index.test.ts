@@ -5,6 +5,7 @@ import {
 	DefineGroupInput,
 	Review,
 	ReviewEvent,
+	ReviewLifecycleBody,
 	SEVERITIES,
 } from "../src/index.js";
 
@@ -83,5 +84,18 @@ describe("schema smoke", () => {
 			},
 		});
 		expect(ev.type).toBe("finding_added");
+	});
+
+	it("ReviewLifecycleBody accepts running and failed transitions", () => {
+		expect(ReviewLifecycleBody.parse({ status: "running" })).toEqual({ status: "running" });
+		expect(ReviewLifecycleBody.parse({ status: "failed", error: "opencode exited 1" })).toEqual({
+			status: "failed",
+			error: "opencode exited 1",
+		});
+	});
+
+	it("ReviewLifecycleBody requires an error for failed transitions", () => {
+		expect(() => ReviewLifecycleBody.parse({ status: "failed" })).toThrow();
+		expect(() => ReviewLifecycleBody.parse({ status: "failed", error: "" })).toThrow();
 	});
 });

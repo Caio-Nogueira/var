@@ -1,29 +1,30 @@
 {
-  "name": "@review-agent/worker",
-  "version": "0.0.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "check-types": "tsc --noEmit",
-    "test": "vitest run",
-    "smoke": "tsx scripts/smoke.ts",
-    "cf-typegen": "wrangler types"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "@review-agent/schema": "workspace:*",
-    "agents": "0.0.99",
-    "jose": "^5.9.6",
-    "zod": "^3.23.8"
-  },
-  "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.12.4",
-    "@types/node": "^25.6.0",
-    "tsx": "^4.21.0",
-    "typescript": "^5.6.3",
-    "vitest": "~3.2.0",
-    "wrangler": "^4.85.0"
-  }
+	"name": "@review-agent/worker",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy",
+		"check-types": "tsc --noEmit",
+		"test": "vitest run",
+		"smoke": "tsx scripts/smoke.ts",
+		"cf-typegen": "wrangler types"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.29.0",
+		"@review-agent/schema": "workspace:*",
+		"agents": "0.0.99",
+		"hono": "^4.12.15",
+		"jose": "^5.9.6",
+		"zod": "^3.23.8"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.12.4",
+		"@types/node": "^25.6.0",
+		"tsx": "^4.21.0",
+		"typescript": "^5.6.3",
+		"vitest": "~3.2.0",
+		"wrangler": "^4.85.0"
+	}
 }

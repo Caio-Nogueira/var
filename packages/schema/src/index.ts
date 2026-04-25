@@ -240,11 +240,18 @@ export type CreateReviewBody = z.infer<typeof CreateReviewBody>;
 export const CreateReviewResponse = z.object({
 	reviewId: z.string(),
 	jwt: z.string(),
+	lifecycleJwt: z.string(),
 	mcpUrl: z.string().url(),
 	reviewUrl: z.string().url(),
 	expiresAt: z.string().datetime(),
 });
 export type CreateReviewResponse = z.infer<typeof CreateReviewResponse>;
+
+export const ReviewLifecycleBody = z.discriminatedUnion("status", [
+	z.object({ status: z.literal("running") }),
+	z.object({ status: z.literal("failed"), error: z.string().min(1).max(4000) }),
+]);
+export type ReviewLifecycleBody = z.infer<typeof ReviewLifecycleBody>;
 
 /**
  * Events emitted on `GET /reviews/:id/events` (SSE). The `event` field is the SSE event name;
