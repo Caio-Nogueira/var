@@ -8,6 +8,7 @@ const EMPTY_REVIEW: Review = {
 	base: { ref: "origin/main", sha: "aaaaaaa1111111111111111111111111aaaaaaa" },
 	head: { ref: "HEAD", sha: "bbbbbbb2222222222222222222222222bbbbbbb" },
 	status: "pending",
+	totalFiles: 0,
 	groups: [],
 	chunks: [],
 	findings: [],

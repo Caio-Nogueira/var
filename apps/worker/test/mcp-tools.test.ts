@@ -21,7 +21,7 @@ describe("Worker MCP review tools", () => {
 	}, 20_000);
 
 	it("lists tools, persists UI-renderable diff data, and emits progress events", async () => {
-		const created = await createReview(server.baseUrl);
+		const created = await createReview(server.baseUrl, 3);
 		const events: ReviewEvent[] = [];
 		const abort = new AbortController();
 		const ssePromise = subscribeSse(
@@ -91,6 +91,9 @@ describe("Worker MCP review tools", () => {
 		expect(snapshot.status).toBe("finalized");
 		expect(snapshot.summary).toBe("One auth issue needs attention before merge.");
 		expect(snapshot.finalizedAt).toEqual(expect.any(String));
+		// totalFiles round-trips from CreateReviewBody to the snapshot so the SPA can render
+		// `X of Y files processed` against a stable denominator.
+		expect(snapshot.totalFiles).toBe(3);
 		expect(snapshot.groups[0]).toMatchObject({
 			id: "auth-refactor",
 			chunkIds: ["verifier-fn"],
@@ -303,7 +306,7 @@ interface CreatedReview {
 	expiresAt: string;
 }
 
-async function createReview(baseUrl: string): Promise<CreatedReview> {
+async function createReview(baseUrl: string, totalFiles = 1): Promise<CreatedReview> {
 	const response = await fetch(`${baseUrl}/reviews`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
@@ -311,6 +314,7 @@ async function createReview(baseUrl: string): Promise<CreatedReview> {
 			repo: { remoteUrl: "git@example.com:acme/widget.git", branch: "feature/auth" },
 			base: { ref: "main", sha: "0".repeat(40) },
 			head: { ref: "feature/auth", sha: "1".repeat(40) },
+			totalFiles,
 		}),
 	});
 	if (!response.ok) throw new Error(`create failed ${response.status}: ${await response.text()}`);

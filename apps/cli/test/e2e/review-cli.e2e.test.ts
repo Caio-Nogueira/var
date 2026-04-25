@@ -58,6 +58,10 @@ describe("review CLI e2e", () => {
 			});
 			expect(snapshot.base).toEqual({ ref: "origin/main", sha: fixture.baseSha });
 			expect(snapshot.head).toEqual({ ref: "HEAD", sha: fixture.headSha });
+			// CLI computes totalFiles from `git diff --name-only base..head`. The fixture commits
+			// two files between base and head (src/app.ts modified, src/feature.ts added), so the
+			// snapshot must report exactly that count.
+			expect(snapshot.totalFiles).toBe(2);
 			expect(snapshot.groups).toHaveLength(1);
 			expect(snapshot.chunks).toHaveLength(1);
 			expect(snapshot.findings).toHaveLength(1);

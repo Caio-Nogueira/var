@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	AddChunkInput,
 	AddFindingInput,
+	CreateReviewBody,
 	DefineGroupInput,
 	Review,
 	ReviewEvent,
@@ -172,10 +173,38 @@ describe("schema smoke", () => {
 			base: { ref: "main", sha: "0".repeat(40) },
 			head: { ref: "feature/x", sha: "1".repeat(40) },
 			status: "pending",
+			totalFiles: 0,
 			createdAt: new Date().toISOString(),
 		});
 		expect(r.groups).toEqual([]);
 		expect(r.findings).toEqual([]);
+		expect(r.totalFiles).toBe(0);
+	});
+
+	it("CreateReviewBody requires totalFiles", () => {
+		// Older clients that don't send totalFiles fail loudly rather than silently rendering
+		// progress against an undefined denominator.
+		expect(() =>
+			CreateReviewBody.parse({
+				base: { ref: "main", sha: "0".repeat(40) },
+				head: { ref: "feature/x", sha: "1".repeat(40) },
+			}),
+		).toThrow();
+		// Negative counts are also rejected — there is no diff with negative files.
+		expect(() =>
+			CreateReviewBody.parse({
+				base: { ref: "main", sha: "0".repeat(40) },
+				head: { ref: "feature/x", sha: "1".repeat(40) },
+				totalFiles: -1,
+			}),
+		).toThrow();
+		// Empty (no-op) diff is legal — base == head should still mint a review record.
+		const empty = CreateReviewBody.parse({
+			base: { ref: "main", sha: "0".repeat(40) },
+			head: { ref: "feature/x", sha: "1".repeat(40) },
+			totalFiles: 0,
+		});
+		expect(empty.totalFiles).toBe(0);
 	});
 
 	it("ReviewEvent discriminates by type", () => {

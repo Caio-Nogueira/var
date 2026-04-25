@@ -204,6 +204,12 @@ export const Review = z.object({
 	}),
 	status: ReviewStatus,
 	summary: z.string().max(16000).optional(),
+	/**
+	 * Total number of files in the diff between base and head, computed by the CLI at review
+	 * creation time via `git diff --name-only`. The SPA derives "X of Y files processed" by
+	 * comparing this against the unique file paths across recorded chunks.
+	 */
+	totalFiles: z.number().int().min(0),
 	groups: z.array(Group).default([]),
 	chunks: z.array(Chunk).default([]),
 	findings: z.array(Finding).default([]),
@@ -291,6 +297,12 @@ export const CreateReviewBody = z.object({
 	repo: Review.shape.repo.optional(),
 	base: Review.shape.base,
 	head: Review.shape.head,
+	/**
+	 * Total number of files in the diff. Required so the SPA can render `X of Y files processed`
+	 * progress without inferring it from chunk events. The CLI computes this from
+	 * `git diff --name-only base..head`.
+	 */
+	totalFiles: z.number().int().min(0),
 });
 export type CreateReviewBody = z.infer<typeof CreateReviewBody>;
 

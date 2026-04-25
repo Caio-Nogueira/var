@@ -78,6 +78,7 @@ async function handleCreateReview(request: Request, env: Env): Promise<Response>
 		base: parsed.data.base,
 		head: parsed.data.head,
 		status: "pending" as const,
+		totalFiles: parsed.data.totalFiles,
 		groups: [],
 		chunks: [],
 		findings: [],

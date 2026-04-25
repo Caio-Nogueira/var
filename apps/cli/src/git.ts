@@ -36,6 +36,23 @@ export async function resolveGitMetadata(options: ResolveGitMetadataOptions): Pr
 	return { repoRoot, repo, base, head };
 }
 
+/**
+ * Count the files changed between base and head. The SPA renders `X of Y files processed`
+ * progress against this denominator, so we want it deterministic and computed up front rather
+ * than inferred mid-stream from chunk events. `git diff --name-only` already deduplicates
+ * renames to a single entry on the head side.
+ */
+export async function countDiffFiles(repoRoot: string, baseSha: string, headSha: string): Promise<number> {
+	if (baseSha === headSha) return 0;
+	try {
+		const out = await runGit(["diff", "--name-only", `${baseSha}..${headSha}`], repoRoot);
+		if (out.length === 0) return 0;
+		return out.split("\n").filter((line) => line.length > 0).length;
+	} catch {
+		throw new CliError(`could not compute diff between ${baseSha} and ${headSha}`);
+	}
+}
+
 export async function runGit(args: string[], cwd: string): Promise<string> {
 	const result = await execFileText("git", args, { cwd });
 	return result.stdout.trim();

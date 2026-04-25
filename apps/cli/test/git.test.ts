@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveGitMetadata } from "../src/git.js";
+import { countDiffFiles, resolveGitMetadata } from "../src/git.js";
 import { createGitFixture } from "./harness/git-fixture.js";
 
 describe("resolveGitMetadata", () => {
@@ -26,5 +26,27 @@ describe("resolveGitMetadata", () => {
 		await expect(
 			resolveGitMetadata({ cwd: "/tmp", baseRef: "origin/main", headRef: "HEAD" }),
 		).rejects.toThrow("not inside a git repository");
+	});
+});
+
+describe("countDiffFiles", () => {
+	it("counts changed files between base and head", async () => {
+		const fixture = await createGitFixture();
+		try {
+			// The fixture commits two files between base and head: src/app.ts modified,
+			// src/feature.ts added.
+			expect(await countDiffFiles(fixture.repoRoot, fixture.baseSha, fixture.headSha)).toBe(2);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
+	it("returns 0 when base equals head (no-op range)", async () => {
+		const fixture = await createGitFixture();
+		try {
+			expect(await countDiffFiles(fixture.repoRoot, fixture.headSha, fixture.headSha)).toBe(0);
+		} finally {
+			await fixture.cleanup();
+		}
 	});
 });

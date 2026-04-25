@@ -36,6 +36,7 @@ async function main() {
 			repo: { remoteUrl: "git@example.com:acme/widget.git", branch: "feature/x" },
 			base: { ref: "main", sha: "0".repeat(40) },
 			head: { ref: "feature/x", sha: "1".repeat(40) },
+			totalFiles: 1,
 		}),
 	});
 	if (!createRes.ok) throw new Error(`create failed ${createRes.status}: ${await createRes.text()}`);
@@ -137,8 +138,11 @@ async function main() {
 
 	console.log(`-> GET ${BASE}/reviews/${review.reviewId}`);
 	const snapRes = await fetch(`${BASE}/reviews/${review.reviewId}`);
-	const snap = await snapRes.json();
+	const snap = (await snapRes.json()) as { totalFiles?: number };
 	console.log("snapshot:", JSON.stringify(snap, null, 2));
+	if (snap.totalFiles !== 1) {
+		throw new Error(`expected snapshot.totalFiles=1, got ${String(snap.totalFiles)}`);
+	}
 
 	await sleep(200);
 	sseAbort.abort();

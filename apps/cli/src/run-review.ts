@@ -3,7 +3,7 @@ import type { Review } from "@review-agent/schema";
 import { createReview, getReview, postReviewLifecycle } from "./api.js";
 import type { CliOptions } from "./args.js";
 import { CliError, errorMessage } from "./errors.js";
-import { resolveGitMetadata } from "./git.js";
+import { countDiffFiles, resolveGitMetadata } from "./git.js";
 import { buildOpenCodeConfig } from "./opencode-config.js";
 import { type OpenCodeResult, runOpenCode } from "./opencode.js";
 import { formatProgressEvent } from "./progress.js";
@@ -48,9 +48,11 @@ export async function runReview(options: CliOptions, io: RunReviewIO): Promise<R
 			headRef: options.headRef,
 		});
 		throwIfAborted(io.signal);
+		const totalFiles = await countDiffFiles(git.repoRoot, git.base.sha, git.head.sha);
+		throwIfAborted(io.signal);
 		const created = await createReview(
 			options.workerUrl,
-			{ repo: git.repo, base: git.base, head: git.head },
+			{ repo: git.repo, base: git.base, head: git.head, totalFiles },
 			fetchImpl,
 			io.signal,
 		);

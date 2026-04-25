@@ -22,6 +22,7 @@ describe("api client", () => {
 				{
 					base: { ref: "origin/main", sha: "0".repeat(40) },
 					head: { ref: "HEAD", sha: "1".repeat(40) },
+					totalFiles: 2,
 				},
 				fetchImpl,
 			),
@@ -37,6 +38,7 @@ describe("api client", () => {
 				{
 					base: { ref: "origin/main", sha: "0".repeat(40) },
 					head: { ref: "HEAD", sha: "1".repeat(40) },
+					totalFiles: 2,
 				},
 				fetchImpl,
 			),

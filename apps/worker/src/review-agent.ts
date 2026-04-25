@@ -42,6 +42,7 @@ interface MetaRow {
 	head: Review["head"];
 	status: ReviewStatus;
 	summary?: string;
+	totalFiles: number;
 	createdAt: string;
 	finalizedAt?: string;
 	error?: string;
@@ -53,6 +54,7 @@ const BLANK_REVIEW: ReviewAgentState = {
 	base: { ref: "", sha: "" },
 	head: { ref: "", sha: "" },
 	status: "pending",
+	totalFiles: 0,
 	groups: [],
 	chunks: [],
 	findings: [],
@@ -114,7 +116,7 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 
 		const body = (await request.json()) as Pick<
 			Review,
-			"id" | "repo" | "base" | "head" | "createdAt"
+			"id" | "repo" | "base" | "head" | "createdAt" | "totalFiles"
 		>;
 		const meta: MetaRow = {
 			id: body.id,
@@ -122,6 +124,7 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 			base: body.base,
 			head: body.head,
 			status: "pending",
+			totalFiles: body.totalFiles,
 			createdAt: body.createdAt,
 		};
 		this.writeMeta(meta);
@@ -391,6 +394,7 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 			base: m.base,
 			head: m.head,
 			status: m.status,
+			totalFiles: m.totalFiles,
 			groups,
 			chunks,
 			findings,
