@@ -88,6 +88,27 @@ describe("buildReviewPrompt", () => {
 		expect(prompt).toContain("4000");
 	});
 
+	// U7 — the prompt now also teaches the structural-validation failure mode added by U4/U5:
+	// the host validates `add_chunk` against the actual diff and returns a structured
+	// `diff_mismatch` payload on disagreement. The agent must know this is the contract so it
+	// (a) doesn't treat the rejection as a host bug, and (b) parses the JSON error to fix the
+	// offending line. This test pins the contract so a future prompt edit can't drop it.
+	it("teaches the diff_mismatch failure mode and structured retry shape", () => {
+		const prompt = buildReviewPrompt(VALID);
+		// The failure code the host emits, named explicitly so the agent can match on it.
+		expect(prompt).toContain("diff_mismatch");
+		// The three reasons the validator can produce — pinning these covers the whole
+		// validator-domain space the agent might encounter on retry.
+		expect(prompt).toContain("content_mismatch");
+		expect(prompt).toContain("line_not_in_diff");
+		expect(prompt).toContain("file_unknown");
+		// The directive that the host has the authoritative diff and the agent should fix the
+		// snippet rather than retrying the same payload. Phrased loosely so future copy edits
+		// (with the same intent) keep passing.
+		expect(prompt.toLowerCase()).toMatch(/host validates|validates? .* against .* (actual )?(unified )?diff/);
+		expect(prompt).toContain("expected");
+	});
+
 	// The prompt is the contract teaching OpenCode (the LLM) how to use the new Code Mode
 	// surface. The MCP server exposes a single `code` tool whose handler runs an async arrow
 	// function in an isolated sandbox; inside the function the LLM calls typed `codemode.*`
