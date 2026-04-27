@@ -18,6 +18,7 @@
 		"agents": "0.0.99",
 		"hono": "^4.12.15",
 		"jose": "^5.9.6",
+		"parse-diff": "^0.12.0",
 		"zod": "^3.23.8"
 	},
 	"devDependencies": {
