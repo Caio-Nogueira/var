@@ -22,6 +22,7 @@ import type {
 	ReviewStatus,
 } from "@review-agent/schema";
 import { Agent, type AgentContext } from "agents";
+import { DiffMismatchError, validateChunkAgainstDiff } from "./chunk-validator.js";
 import {
 	type DiffIndex,
 	type SerializedDiffIndex,
@@ -30,6 +31,8 @@ import {
 	serializeDiffIndex,
 } from "./diff-index.js";
 import { handleMcpRequest } from "./mcp.js";
+
+export { DiffMismatchError } from "./chunk-validator.js";
 
 export interface ReviewAgentEnv {
 	JWT_SECRET: string;
@@ -241,6 +244,12 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 		this.requireWritable();
 		this.requireGroupExists(chunk.groupId);
 		validateChunkDiff(chunk);
+		// Content fidelity check against the actual unified diff. Skips when there is no index
+		// to compare against (older review or empty diff) — see `chunk-validator.ts` for the
+		// back-compat hinge. Throws `DiffMismatchError` on any line mismatch; the MCP tool
+		// surfaces those as structured payloads (U5) so the agent can self-correct on retry.
+		const diffIndex = this.getDiffIndex();
+		if (diffIndex !== null) validateChunkAgainstDiff(chunk, diffIndex);
 		const persisted = redactChunkContent(chunk);
 		try {
 			this
