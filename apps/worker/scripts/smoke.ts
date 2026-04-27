@@ -91,7 +91,10 @@ async function main() {
 	const tools = await client.listTools();
 	console.log("   tools:", tools.tools.map((t) => t.name).join(", "));
 	const codeTool = tools.tools.find((t) => t.name === "code");
-	if (!codeTool) throw new Error(`expected a single 'code' tool, got: ${tools.tools.map((t) => t.name).join(", ")}`);
+	if (!codeTool)
+		throw new Error(
+			`expected a single 'code' tool, got: ${tools.tools.map((t) => t.name).join(", ")}`,
+		);
 	console.log("   tool description (truncated):");
 	console.log("   ", (codeTool.description ?? "").slice(0, 320).replace(/\n/g, "\n    "), "...");
 

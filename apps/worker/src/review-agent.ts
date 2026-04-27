@@ -258,13 +258,7 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 		// only submitted ranges. `materializeChunk` throws `DiffMismatchError` for unknown
 		// files, binary files, ranges that miss every hunk, or counts that exceed the cap;
 		// the MCP layer (U4) maps the throw into the structured error envelope.
-		const hunks = materializeChunk(
-			diffIndex,
-			input.file,
-			input.baseRange,
-			input.headRange,
-			input.id,
-		);
+		const hunks = materializeChunk(diffIndex, input.file, input.baseRange, input.headRange, input.id);
 		const assembled: Chunk = {
 			id: input.id,
 			groupId: input.groupId,

@@ -21,16 +21,14 @@
  * on DO reconstruction without re-parsing the raw text.
  */
 
-import parseDiff from "parse-diff";
 import type { DiffHunk, DiffLine, FileRef, LineRange } from "@review-agent/schema";
+import parseDiff from "parse-diff";
 
 /**
  * Per-file diff entry. Either a binary blob (no materializable content) or an ordered list of
  * hunks the materializer can slice against an agent's `(baseRange, headRange)`.
  */
-export type FileDiffEntry =
-	| { kind: "binary" }
-	| { kind: "text"; hunks: DiffHunk[] };
+export type FileDiffEntry = { kind: "binary" } | { kind: "text"; hunks: DiffHunk[] };
 
 export type DiffIndex = Map<string, FileDiffEntry>;
 
@@ -209,13 +207,7 @@ export function materializeChunk(
 	}
 
 	if (out.length === 0) {
-		throw new DiffMismatchError(
-			"range_outside_diff",
-			chunkId,
-			lookupPath,
-			baseRange,
-			headRange,
-		);
+		throw new DiffMismatchError("range_outside_diff", chunkId, lookupPath, baseRange, headRange);
 	}
 	if (out.length > MAX_HUNKS_PER_CHUNK) {
 		throw new DiffMismatchError(

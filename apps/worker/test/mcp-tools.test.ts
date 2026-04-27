@@ -832,9 +832,7 @@ function extractDiffMismatchPayload(errorMessage: string): {
 	// close brace.
 	const codeIdx = errorMessage.indexOf('"code":"diff_mismatch"');
 	if (codeIdx === -1) {
-		throw new Error(
-			`structured diff_mismatch payload not found in error message: ${errorMessage}`,
-		);
+		throw new Error(`structured diff_mismatch payload not found in error message: ${errorMessage}`);
 	}
 	// Walk backward from the code-key index to the opening `{` that starts this object.
 	let start = codeIdx;

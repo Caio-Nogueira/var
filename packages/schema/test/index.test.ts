@@ -143,7 +143,7 @@ describe("schema smoke", () => {
 		expect("hunks" in parsed).toBe(false);
 	});
 
-	it("ChunkInput rejects kind: \"context\" (not authorable under materialization)", () => {
+	it('ChunkInput rejects kind: "context" (not authorable under materialization)', () => {
 		// Pure-context chunks were authorable under the old transcription contract; under
 		// materialization there are no indexed bytes to materialize for code outside any hunk's
 		// diff-context window, so `"context"` is no longer a legal author shape. The persisted
@@ -247,7 +247,7 @@ describe("schema smoke", () => {
 		).toThrow();
 	});
 
-	it("Chunk accepts kind: \"context\" for back-compat with already-persisted snapshots", () => {
+	it('Chunk accepts kind: "context" for back-compat with already-persisted snapshots', () => {
 		// `ChunkInput.kind` narrows to `"change"` only, but the persisted `Chunk` schema retains
 		// the wider `ChunkKind` enum so older snapshots whose chunks carry `kind: "context"`
 		// still round-trip cleanly through `Review.parse(...)`.

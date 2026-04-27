@@ -103,9 +103,7 @@ describe("buildReviewPrompt", () => {
 		expect(prompt).toContain("binary_file");
 		expect(prompt).toContain("too_many_hunks");
 		// A recovery hint phrased loosely so copy edits with the same intent keep passing.
-		expect(prompt.toLowerCase()).toMatch(
-			/host has the diff|tighten the range|narrower ranges/,
-		);
+		expect(prompt.toLowerCase()).toMatch(/host has the diff|tighten the range|narrower ranges/);
 	});
 
 	// The agent no longer authors hunk lines, so it must read the unified diff first-hand
