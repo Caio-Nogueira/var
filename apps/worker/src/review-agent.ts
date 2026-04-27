@@ -22,6 +22,13 @@ import type {
 	ReviewStatus,
 } from "@review-agent/schema";
 import { Agent, type AgentContext } from "agents";
+import {
+	type DiffIndex,
+	type SerializedDiffIndex,
+	deserializeDiffIndex,
+	parseUnifiedDiff,
+	serializeDiffIndex,
+} from "./diff-index.js";
 import { handleMcpRequest } from "./mcp.js";
 
 export interface ReviewAgentEnv {
@@ -54,6 +61,19 @@ interface MetaRow {
 	createdAt: string;
 	finalizedAt?: string;
 	error?: string;
+	/**
+	 * Raw unified-diff text the CLI captured at review-creation time. The validator uses
+	 * `diffIndex` (a derived cache of this) on the hot path; this field exists for debugging
+	 * + future re-parsing if the index format ever changes. Optional so reviews persisted
+	 * before the validator landed remain readable.
+	 */
+	unifiedDiff?: string;
+	/**
+	 * Per-path lookup over the unified diff, serialized as nested arrays-of-tuples (Maps don't
+	 * JSON-serialize). Absence here is the back-compat hinge: validator pass-through for old
+	 * reviews. Presence triggers strict line-content validation in `addChunk`.
+	 */
+	diffIndex?: SerializedDiffIndex;
 }
 
 const BLANK_REVIEW: ReviewAgentState = {
@@ -72,6 +92,13 @@ const BLANK_REVIEW: ReviewAgentState = {
 
 export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 	private subscribers = new Set<Subscriber>();
+	/**
+	 * Lazily-hydrated, in-memory cache of the diff index for this review. The validator reads
+	 * it on every `addChunk`; we don't want to JSON-parse + rebuild Maps on each call. Cleared
+	 * by reads that find a different `meta` row underneath (which shouldn't happen mid-life,
+	 * but the assertion is cheap).
+	 */
+	private diffIndexCache: { serialized: SerializedDiffIndex; index: DiffIndex } | null = null;
 
 	override initialState: ReviewAgentState = BLANK_REVIEW;
 
@@ -125,7 +152,7 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 		const body = (await request.json()) as Pick<
 			Review,
 			"id" | "repo" | "base" | "head" | "createdAt" | "totalFiles"
-		>;
+		> & { unifiedDiff?: string };
 		const meta: MetaRow = {
 			id: body.id,
 			repo: body.repo,
@@ -135,6 +162,15 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 			totalFiles: body.totalFiles,
 			createdAt: body.createdAt,
 		};
+		// Parse the diff once at init and stash both the raw text (for debugging / future
+		// re-parsing) and the serialized index (the hot-path read). An empty diff yields an
+		// empty index — that's the contract for `addChunk`'s back-compat skip path: zero entries
+		// means "no validation to run". The Worker rejects oversize diffs upstream via
+		// `CreateReviewBody.parse`, so by the time we get here we trust the size.
+		if (typeof body.unifiedDiff === "string") {
+			meta.unifiedDiff = body.unifiedDiff;
+			meta.diffIndex = serializeDiffIndex(parseUnifiedDiff(body.unifiedDiff));
+		}
 		this.writeMeta(meta);
 		const projected = this.project(meta);
 		this.setState(projected);
@@ -269,6 +305,23 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 	reviewUrl(): string {
 		const meta = this.requireInitialized();
 		return `${this.env.PUBLIC_BASE_URL.replace(/\/$/, "")}/r/${meta.id}`;
+	}
+
+	/**
+	 * Hydrate the diff index for the validator. Returns `null` for back-compat with reviews
+	 * persisted before the validator landed (no `diffIndex` in `meta`) — callers should treat
+	 * `null` as "skip validation". The cached deserialized form is reused as long as the
+	 * underlying `meta.diffIndex` reference hasn't changed.
+	 */
+	getDiffIndex(): DiffIndex | null {
+		const meta = this.readMeta();
+		if (!meta || meta.diffIndex === undefined) return null;
+		if (this.diffIndexCache && this.diffIndexCache.serialized === meta.diffIndex) {
+			return this.diffIndexCache.index;
+		}
+		const index = deserializeDiffIndex(meta.diffIndex);
+		this.diffIndexCache = { serialized: meta.diffIndex, index };
+		return index;
 	}
 
 	markRunning(meta = this.requireInitialized()): ReviewAgentState {

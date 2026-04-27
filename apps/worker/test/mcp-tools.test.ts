@@ -463,7 +463,11 @@ interface CreatedReview {
 	expiresAt: string;
 }
 
-async function createReview(baseUrl: string, totalFiles = 1): Promise<CreatedReview> {
+async function createReview(
+	baseUrl: string,
+	totalFiles = 1,
+	unifiedDiff = "",
+): Promise<CreatedReview> {
 	const response = await fetch(`${baseUrl}/reviews`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
@@ -472,6 +476,11 @@ async function createReview(baseUrl: string, totalFiles = 1): Promise<CreatedRev
 			base: { ref: "main", sha: "0".repeat(40) },
 			head: { ref: "feature/auth", sha: "1".repeat(40) },
 			totalFiles,
+			// Default empty string keeps existing tests' contract narrow: the DO parses it,
+			// stores an empty index, and the validator (when it lands in U4) treats an empty
+			// index as "no validation to run" — same as a back-compat skip. Tests that want to
+			// exercise the validator pass a real diff via the U6 `sampleDiff()` helper.
+			unifiedDiff,
 		}),
 	});
 	if (!response.ok) throw new Error(`create failed ${response.status}: ${await response.text()}`);

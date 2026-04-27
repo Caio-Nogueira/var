@@ -79,6 +79,9 @@ async function handleCreateReview(request: Request, env: Env): Promise<Response>
 		head: parsed.data.head,
 		status: "pending" as const,
 		totalFiles: parsed.data.totalFiles,
+		// The unified diff travels through the init body so the DO can parse + index it once.
+		// CreateReviewBody guarantees a string here (possibly empty for identical SHAs).
+		unifiedDiff: parsed.data.unifiedDiff,
 		groups: [],
 		chunks: [],
 		findings: [],
