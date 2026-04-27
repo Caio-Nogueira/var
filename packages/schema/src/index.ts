@@ -79,6 +79,17 @@ const Slug = z
 	.max(80)
 	.regex(/^[a-z0-9][a-z0-9-]*$/, "must be lowercase kebab-case slug");
 
+/**
+ * Hard cap on the unified-diff text we accept on `POST /reviews`. Set high enough to cover all
+ * but the most enormous PRs (10 MB of unified-diff text easily covers thousands of changed
+ * files) and low enough that a single Worker request body stays well-bounded. Override at the
+ * CLI via `--max-diff-bytes` for repos whose review-worthy diffs exceed this.
+ *
+ * Shared between the CLI (pre-flight check) and the Worker (Zod parse) so both sides reject at
+ * the same threshold.
+ */
+export const MAX_UNIFIED_DIFF_BYTES = 10 * 1024 * 1024;
+
 // ---- Domain objects -------------------------------------------------------
 
 /**
@@ -244,6 +255,16 @@ export const Review = z.object({
 	finalizedAt: z.string().datetime().optional(),
 	/** Server-side error if `status === "failed"`. */
 	error: z.string().optional(),
+	/**
+	 * Full unified-diff text for `base..head` captured by the CLI at review-creation time. The
+	 * DO uses this as the source-of-truth for `add_chunk` content fidelity validation. Optional
+	 * so older reviews persisted before the validator landed still parse.
+	 *
+	 * The DO snapshot returned by `GET /reviews/:id` does NOT include this field — it lives in
+	 * the DO's internal `meta` row only. The optionality here is purely so persisted state can
+	 * round-trip the field if we ever choose to serialize it.
+	 */
+	unifiedDiff: z.string().max(MAX_UNIFIED_DIFF_BYTES).optional(),
 });
 export type Review = z.infer<typeof Review>;
 
@@ -328,6 +349,17 @@ export const CreateReviewBody = z.object({
 	 * `git diff --name-only base..head`.
 	 */
 	totalFiles: z.number().int().min(0),
+	/**
+	 * Full unified-diff text for `base..head`, captured by the CLI via `git diff`. The Worker
+	 * parses this once at review init, builds a per-file index, and validates every `add_chunk`
+	 * call's line content against it — so the agent cannot replace real diff lines with a
+	 * synthetic gloss like `// + 20-line cron block: addRaw…`. Empty string is legal (a review
+	 * against identical SHAs has no diff).
+	 *
+	 * Capped at `MAX_UNIFIED_DIFF_BYTES`; the CLI errors before posting if the diff exceeds the
+	 * cap, the Worker rejects again here as defense in depth.
+	 */
+	unifiedDiff: z.string().max(MAX_UNIFIED_DIFF_BYTES),
 });
 export type CreateReviewBody = z.infer<typeof CreateReviewBody>;
 

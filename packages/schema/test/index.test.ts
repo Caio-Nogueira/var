@@ -4,6 +4,7 @@ import {
 	AddFindingInput,
 	CreateReviewBody,
 	DefineGroupInput,
+	MAX_UNIFIED_DIFF_BYTES,
 	Review,
 	ReviewEvent,
 	ReviewLifecycleBody,
@@ -207,6 +208,7 @@ describe("schema smoke", () => {
 			CreateReviewBody.parse({
 				base: { ref: "main", sha: "0".repeat(40) },
 				head: { ref: "feature/x", sha: "1".repeat(40) },
+				unifiedDiff: "",
 			}),
 		).toThrow();
 		// Negative counts are also rejected — there is no diff with negative files.
@@ -215,6 +217,7 @@ describe("schema smoke", () => {
 				base: { ref: "main", sha: "0".repeat(40) },
 				head: { ref: "feature/x", sha: "1".repeat(40) },
 				totalFiles: -1,
+				unifiedDiff: "",
 			}),
 		).toThrow();
 		// Empty (no-op) diff is legal — base == head should still mint a review record.
@@ -222,8 +225,69 @@ describe("schema smoke", () => {
 			base: { ref: "main", sha: "0".repeat(40) },
 			head: { ref: "feature/x", sha: "1".repeat(40) },
 			totalFiles: 0,
+			unifiedDiff: "",
 		});
 		expect(empty.totalFiles).toBe(0);
+		expect(empty.unifiedDiff).toBe("");
+	});
+
+	it("CreateReviewBody requires unifiedDiff", () => {
+		// The validator depends on having the diff to compare against. A client that forgets to
+		// send it (older CLI build) fails Zod parse rather than silently disabling validation.
+		expect(() =>
+			CreateReviewBody.parse({
+				base: { ref: "main", sha: "0".repeat(40) },
+				head: { ref: "feature/x", sha: "1".repeat(40) },
+				totalFiles: 0,
+			}),
+		).toThrow();
+	});
+
+	it("CreateReviewBody accepts a small unified diff", () => {
+		const body = CreateReviewBody.parse({
+			base: { ref: "main", sha: "0".repeat(40) },
+			head: { ref: "feature/x", sha: "1".repeat(40) },
+			totalFiles: 1,
+			unifiedDiff:
+				"diff --git a/x b/x\nindex 1..2 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n",
+		});
+		expect(body.unifiedDiff).toContain("@@");
+	});
+
+	it("CreateReviewBody enforces MAX_UNIFIED_DIFF_BYTES at the boundary", () => {
+		// Exactly at the cap parses; one byte over rejects.
+		const atCap = CreateReviewBody.parse({
+			base: { ref: "main", sha: "0".repeat(40) },
+			head: { ref: "feature/x", sha: "1".repeat(40) },
+			totalFiles: 0,
+			unifiedDiff: "x".repeat(MAX_UNIFIED_DIFF_BYTES),
+		});
+		expect(atCap.unifiedDiff.length).toBe(MAX_UNIFIED_DIFF_BYTES);
+		expect(() =>
+			CreateReviewBody.parse({
+				base: { ref: "main", sha: "0".repeat(40) },
+				head: { ref: "feature/x", sha: "1".repeat(40) },
+				totalFiles: 0,
+				unifiedDiff: "x".repeat(MAX_UNIFIED_DIFF_BYTES + 1),
+			}),
+		).toThrow();
+	});
+
+	it("Review snapshot parses with or without unifiedDiff (back-compat for old persisted state)", () => {
+		const base = {
+			id: "rev_abc",
+			base: { ref: "main", sha: "0".repeat(40) },
+			head: { ref: "feature/x", sha: "1".repeat(40) },
+			status: "pending" as const,
+			totalFiles: 0,
+			createdAt: new Date().toISOString(),
+		};
+		// Older snapshots predate the field — they parse with `unifiedDiff` undefined.
+		const old = Review.parse(base);
+		expect(old.unifiedDiff).toBeUndefined();
+		// Newer snapshots round-trip the diff text intact when callers do choose to include it.
+		const fresh = Review.parse({ ...base, unifiedDiff: "diff --git a/x b/x\n" });
+		expect(fresh.unifiedDiff).toContain("diff --git");
 	});
 
 	it("ReviewEvent discriminates by type", () => {
