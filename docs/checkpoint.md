@@ -43,14 +43,18 @@ local                                       Cloudflare
   dispatches to the host via Workers RPC and lands in the same DO mutators as before. Rationale:
   ergonomic chaining via TS snippets beats many discrete tool calls; token savings are a side
   effect. `@cloudflare/codemode` is beta and pinned exactly.
-- **Server-side diff fidelity validation:** DONE. See
-  `docs/plans/2026-04-27-002-feat-server-side-diff-fidelity-validation-plan.md`. The CLI now
-  ships the full `git diff base..head` text with each review (capped at
-  `MAX_UNIFIED_DIFF_BYTES = 10 MiB`, override via `--max-diff-bytes`); the Worker parses and
-  indexes it once at init and rejects any `add_chunk` whose `hunks[].lines[].content` disagrees
-  with the actual diff. Rejections surface as a structured `diff_mismatch` JSON envelope so the
-  agent can self-correct on retry. Closes the loophole where the agent could replace real diff
-  lines with synthetic glosses like `// + 20-line cron block: addRaw…`.
+- **Server-side diff fidelity validation:** SUPERSEDED by the materialization refactor below.
+  The CLI ships the diff and the Worker indexes it; what changed is who fills in the chunk
+  content.
+- **Reference-only chunks (server materializes from the diff):** DONE. See
+  `docs/plans/2026-04-27-003-refactor-reference-only-chunks-plan.md`. `add_chunk` now takes
+  `ChunkInput` — ranges and curatorial intent only, no `hunks` field. The Worker indexes the
+  unified diff once at init (via `parse-diff`) and `materializeChunk` produces
+  `Chunk.hunks[].lines[].content` from the host's own copy at write time. Rejections fall into
+  four reason codes (`file_unknown`, `range_outside_diff`, `binary_file`, `too_many_hunks`)
+  surfaced via the same structured `diff_mismatch` envelope. The validator, the
+  `DIFF FIDELITY` prompt block, and the `bad_content` failure mode are all deleted because the
+  agent can no longer fabricate content — there's nothing to fabricate.
 
 `apps/worker/scripts/smoke.ts` exercises the full flow against `wrangler dev` (already passing).
 

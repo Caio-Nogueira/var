@@ -65,9 +65,11 @@ Two principles thread through the prompt:
   them as opinion.
 - **Brevity everywhere.** Group narratives 1-2 sentences. Findings aim for one sentence (the
   schema caps `Finding.body` at 1500 chars). Review summary 1-2 sentences.
-- **Verbatim chunk content.** The CLI ships the full unified diff with each review and the
-  Worker validates every `add_chunk` line against it; agents that paraphrase or summarize hunks
-  get a structured `diff_mismatch` rejection instead of writing fiction into the snapshot.
+- **Reference-only chunks.** The CLI ships the full unified diff with each review; the Worker
+  materializes chunk content from the diff at `add_chunk` time. Agents submit ranges and
+  curatorial intent (`baseRange`, `headRange`, `caption`) — never diff bytes. The four
+  `diff_mismatch` reasons (`file_unknown`, `range_outside_diff`, `binary_file`,
+  `too_many_hunks`) tell the agent how to fix a missed range; the host owns the content.
 
 While the review is in flight, the SPA shows a progress counter (`X of Y files processed · N
 groups · M findings`) instead of half-written content. The full structural view appears once
