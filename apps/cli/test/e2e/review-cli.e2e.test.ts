@@ -192,6 +192,35 @@ describe("review CLI e2e", () => {
 		}
 	}, 60_000);
 
+	// New failure surface introduced by Code Mode: a snippet that lands a few `codemode.*`
+	// mutations and then `throw`s. The host sees the partial mutations persist, the wrapped
+	// `code` tool returns `isError: true`, and OpenCode's child process exits non-zero.
+	// CLI behavior is the same as any other OpenCode failure: lifecycle reports failed,
+	// the snapshot reflects whatever landed before the throw, and the persisted error pins
+	// the snippet's message.
+	it("marks the review failed when the OpenCode snippet throws after partial progress", async () => {
+		const fixture = await createGitFixture();
+		try {
+			const result = await runCli(fixture, { REVIEW_AGENT_MOCK_MODE: "snippet-throws" });
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("mock-snippet-failure");
+
+			const snapshot = await fetchSnapshot(result.stdout);
+			expect(snapshot.status).toBe("failed");
+			expect(snapshot.error).toContain("mock-snippet-failure");
+			// The snippet awaited define_group + add_chunk before throwing — those land on the
+			// host because the actor model serializes them and there's no rollback semantics.
+			expect(snapshot.groups.map((g) => g.id)).toEqual(["mock-review"]);
+			expect(snapshot.chunks.map((c) => c.id)).toEqual(["app-change"]);
+			// Nothing past the throw landed.
+			expect(snapshot.findings).toEqual([]);
+			expect(snapshot.comments).toEqual([]);
+			expect(snapshot.summary).toBeUndefined();
+		} finally {
+			await fixture.cleanup();
+		}
+	}, 60_000);
+
 	it("--working-tree reviews staged + unstaged + untracked changes against HEAD", async () => {
 		const fixture = await createGitFixture();
 		try {

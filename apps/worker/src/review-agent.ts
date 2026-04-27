@@ -29,6 +29,14 @@ export interface ReviewAgentEnv {
 	PUBLIC_BASE_URL: string;
 	ReviewAgent: DurableObjectNamespace<ReviewAgent>;
 	ASSETS: Fetcher;
+	/**
+	 * Worker Loader binding used by Code Mode (`@cloudflare/codemode`). The DO passes
+	 * this through to `handleMcpRequest`, which constructs a `DynamicWorkerExecutor`
+	 * around it so the `code` MCP tool can run LLM-authored snippets in an isolated
+	 * sandbox. RPC dispatch back to the host (the DO's mutators) does not flow through
+	 * this binding.
+	 */
+	LOADER: WorkerLoader;
 }
 
 export type ReviewAgentState = Review;
@@ -101,7 +109,7 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 	private async handleMcp(request: Request): Promise<Response> {
 		const meta = this.readMeta();
 		if (!meta) return new Response("not found", { status: 404 });
-		return handleMcpRequest(request, this);
+		return handleMcpRequest(request, this, this.env.LOADER);
 	}
 
 	private handleSnapshot(): Response {

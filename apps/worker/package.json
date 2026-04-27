@@ -12,6 +12,7 @@
 		"cf-typegen": "wrangler types"
 	},
 	"dependencies": {
+		"@cloudflare/codemode": "0.3.4",
 		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@review-agent/schema": "workspace:*",
 		"agents": "0.0.99",

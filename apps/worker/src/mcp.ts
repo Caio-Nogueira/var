@@ -7,8 +7,18 @@
  *
  * Stateless transport (`sessionIdGenerator: undefined`): the JWT identifies the review; we don't
  * need MCP's own session management on top.
+ *
+ * Tool surface: a single `code` tool produced by `@cloudflare/codemode`'s `codeMcpServer`. The
+ * upstream `buildServer` still registers all six review operations (`define_group`, `add_chunk`,
+ * `add_finding`, `add_inline_comment`, `set_narrative`, `finalize_review`) with their existing
+ * Zod input schemas — codemode reads that registry to generate `codemode.*` TypeScript types and
+ * hands the LLM a single typed sandbox in which to write a snippet that orchestrates them. RPC
+ * dispatch back to the host runs the same mutator paths as before; redaction, foreign-key
+ * checks, and terminal-state guards are unchanged.
  */
 
+import { DynamicWorkerExecutor } from "@cloudflare/codemode";
+import { codeMcpServer } from "@cloudflare/codemode/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
@@ -202,8 +212,35 @@ function buildServer(agent: ReviewAgent): McpServer {
 }
 
 /**
- * Handle a single MCP request inside the DO. Builds a fresh server + transport, connects them,
- * and lets the transport drive request/response over Web standard Request/Response.
+ * Wrap the upstream review-tool `McpServer` with `codeMcpServer` so the on-the-wire surface is a
+ * single `code` tool whose description embeds typed `codemode.*` definitions for every upstream
+ * tool. The wrapper:
+ *
+ *   1. Connects to `upstream` via an in-memory MCP transport, lists its tools, and generates
+ *      TypeScript types from each tool's JSON Schema input shape.
+ *   2. Stands up a fresh `McpServer` with one tool (`code`) whose description is
+ *      `<intro>\n{{types}}\n{{example}}` and whose handler runs the user's snippet via the
+ *      executor. Each `codemode.*` call inside the snippet round-trips back to the upstream
+ *      via Workers RPC (no network), landing in the same handler the per-tool surface used.
+ *   3. Returns the wrapped server, which we connect to the same streamable-HTTP transport.
+ *
+ * `globalOutbound: null` is the default; we set it explicitly to make the network-isolation
+ * intent visible. The 30s default timeout is generous for one snippet's-worth of mutations and
+ * is documented in the plan as the place to tune later if a real review hits the cap.
+ */
+async function buildCodeWrappedServer(
+	agent: ReviewAgent,
+	loader: WorkerLoader,
+): Promise<McpServer> {
+	const upstream = buildServer(agent);
+	const executor = new DynamicWorkerExecutor({ loader, globalOutbound: null });
+	return codeMcpServer({ server: upstream, executor });
+}
+
+/**
+ * Handle a single MCP request inside the DO. Builds a fresh code-wrapped server + transport,
+ * connects them, and lets the transport drive request/response over Web standard
+ * Request/Response.
  *
  * IMPORTANT: We must NOT `server.close()` synchronously after `handleRequest` returns. The
  * Response's body is a ReadableStream that is still being written to as tool callbacks fire
@@ -213,8 +250,12 @@ function buildServer(agent: ReviewAgent): McpServer {
  * Cleanup happens automatically when the response body stream finishes (the transport closes the
  * controller in its `cleanup` callback).
  */
-export async function handleMcpRequest(request: Request, agent: ReviewAgent): Promise<Response> {
-	const server = buildServer(agent);
+export async function handleMcpRequest(
+	request: Request,
+	agent: ReviewAgent,
+	loader: WorkerLoader,
+): Promise<Response> {
+	const server = await buildCodeWrappedServer(agent, loader);
 	// Stateless mode: omit `sessionIdGenerator` entirely.
 	const transport = new WebStandardStreamableHTTPServerTransport({});
 	await server.connect(transport);

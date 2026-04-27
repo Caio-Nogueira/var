@@ -9,7 +9,26 @@ import {
 	startWranglerDev,
 } from "./harness/wrangler-dev.js";
 
-describe("Worker MCP review tools", () => {
+/**
+ * Worker MCP integration tests, driven through the single `code` tool exposed by
+ * `@cloudflare/codemode`'s `codeMcpServer`. The host-side mutators on `ReviewAgent` haven't
+ * changed; what changed is that OpenCode now writes a TypeScript snippet that calls
+ * `codemode.define_group(...)`, `codemode.add_chunk(...)`, etc., rather than calling each tool
+ * directly. The wrapper dispatches each `codemode.*` call back to the host via Workers RPC.
+ *
+ * These tests exercise the new transport end-to-end:
+ *   - `tools/list` returns exactly one tool, named `code`, whose description embeds typed
+ *     declarations for every upstream review op.
+ *   - A snippet that calls every op produces the same final snapshot the per-tool surface used
+ *     to produce, with one SSE event per `await`-ed `codemode.*` call in source order.
+ *   - Snippet errors, foreign-key violations, terminal-state guards, and sandbox isolation all
+ *     surface to the caller as the wrapped tool result without partially mutating the DO past
+ *     the error point.
+ *   - JWT auth is unchanged: missing token, lifecycle-audience token, and unknown-review token
+ *     all reject before the `code` tool runs.
+ */
+
+describe("Worker MCP review tools (Code Mode)", () => {
 	let server: WranglerDevServer;
 
 	beforeAll(async () => {
@@ -20,7 +39,34 @@ describe("Worker MCP review tools", () => {
 		await server?.stop();
 	}, 20_000);
 
-	it("lists tools, persists UI-renderable diff data, and emits progress events", async () => {
+	it("exposes a single `code` tool whose description embeds every review operation", async () => {
+		const created = await createReview(server.baseUrl);
+		const client = await connectMcp(created.mcpUrl, created.jwt);
+		try {
+			const tools = await client.listTools();
+			expect(tools.tools).toHaveLength(1);
+			const code = tools.tools[0];
+			expect(code?.name).toBe("code");
+			const description = code?.description ?? "";
+			// The auto-generated description embeds the upstream tool names verbatim as
+			// `codemode.*` declarations. Pin all six so a future schema rename or wrapper change
+			// surfaces here loudly.
+			for (const op of [
+				"define_group",
+				"add_chunk",
+				"add_finding",
+				"add_inline_comment",
+				"set_narrative",
+				"finalize_review",
+			]) {
+				expect(description).toContain(op);
+			}
+		} finally {
+			await client.close();
+		}
+	});
+
+	it("runs a single snippet covering every operation, persists it, and emits SSE in await order", async () => {
 		const created = await createReview(server.baseUrl, 3);
 		const events: ReviewEvent[] = [];
 		const abort = new AbortController();
@@ -35,61 +81,41 @@ describe("Worker MCP review tools", () => {
 
 		const client = await connectMcp(created.mcpUrl, created.jwt);
 		try {
-			const tools = await client.listTools();
-			expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
-				"add_chunk",
-				"add_finding",
-				"add_inline_comment",
-				"define_group",
-				"finalize_review",
-				"set_narrative",
-			]);
-			// Tool descriptions co-author the prompt — they're what the agent reads inside MCP
-			// `tools/list`. Pin the phrases that encode the new behavioral contract so a future
-			// edit can't silently drop them.
-			const byName = new Map(tools.tools.map((t) => [t.name, t.description ?? ""]));
-			const defineGroupDesc = byName.get("define_group") ?? "";
-			expect(defineGroupDesc.toLowerCase()).toContain("objective");
-			expect(defineGroupDesc.toLowerCase()).toContain("adjectives");
-			const addChunkDesc = byName.get("add_chunk") ?? "";
-			expect(addChunkDesc.toLowerCase()).toContain("every hunk");
-			const addFindingDesc = byName.get("add_finding") ?? "";
-			expect(addFindingDesc.toLowerCase()).toContain("one sentence");
-			expect(addFindingDesc).toContain("1500");
-			const addInlineDesc = byName.get("add_inline_comment") ?? "";
-			expect(addInlineDesc.toLowerCase()).toContain("wayfinding");
-
-			await callOk(client, "define_group", {
-				id: "auth-refactor",
-				title: "Auth refactor",
-				theme: "auth",
-				narrative: "The auth verifier changed shape.",
-			});
-			await callOk(client, "add_chunk", sampleChunk());
-			await callOk(client, "add_finding", {
-				id: "pin-algorithm",
-				groupId: "auth-refactor",
-				severity: "must_fix",
-				title: "Pin JWT algorithm",
-				body: "The verifier should pin allowed algorithms.",
-				refs: [{ kind: "chunk", chunkId: "verifier-fn" }],
-			});
-			await callOk(client, "add_inline_comment", {
-				id: "line-11",
-				chunkId: "verifier-fn",
-				line: 11,
-				side: "head",
-				body: "This is the changed verifier call.",
-				severity: "consider",
-			});
-			await callOk(client, "set_narrative", { summary: "One auth issue needs attention." });
-			const finalized = await callOk(client, "finalize_review", {
-				summary: "One auth issue needs attention before merge.",
-			});
-
-			expect(finalized).toMatchObject({
-				ok: true,
-				reviewId: created.reviewId,
+			const result = await callCode(
+				client,
+				`async () => {
+					await codemode.define_group(${json({
+						id: "auth-refactor",
+						title: "Auth refactor",
+						theme: "auth",
+						narrative: "The auth verifier changed shape.",
+					})});
+					await codemode.add_chunk(${json(sampleChunk())});
+					await codemode.add_finding(${json({
+						id: "pin-algorithm",
+						groupId: "auth-refactor",
+						severity: "must_fix",
+						title: "Pin JWT algorithm",
+						body: "The verifier should pin allowed algorithms.",
+						refs: [{ kind: "chunk", chunkId: "verifier-fn" }],
+					})});
+					await codemode.add_inline_comment(${json({
+						id: "line-11",
+						chunkId: "verifier-fn",
+						line: 11,
+						side: "head",
+						body: "This is the changed verifier call.",
+						severity: "consider",
+					})});
+					await codemode.set_narrative(${json({ summary: "One auth issue needs attention." })});
+					const finalized = await codemode.finalize_review(${json({
+						summary: "One auth issue needs attention before merge.",
+					})});
+					return { reviewUrl: finalized.reviewUrl, status: finalized.status };
+				}`,
+			);
+			// The snippet's return value is surfaced as the `code` tool's text content.
+			expect(result).toMatchObject({
 				reviewUrl: created.reviewUrl,
 				status: "finalized",
 			});
@@ -104,8 +130,6 @@ describe("Worker MCP review tools", () => {
 		expect(snapshot.status).toBe("finalized");
 		expect(snapshot.summary).toBe("One auth issue needs attention before merge.");
 		expect(snapshot.finalizedAt).toEqual(expect.any(String));
-		// totalFiles round-trips from CreateReviewBody to the snapshot so the SPA can render
-		// `X of Y files processed` against a stable denominator.
 		expect(snapshot.totalFiles).toBe(3);
 		expect(snapshot.groups[0]).toMatchObject({
 			id: "auth-refactor",
@@ -125,6 +149,8 @@ describe("Worker MCP review tools", () => {
 			{ kind: "context", baseLine: 12, headLine: 12, content: "}" },
 			{ kind: "add", baseLine: null, headLine: 13, content: "" },
 		]);
+		// One outer `code` tool call drives one SSE event per `codemode.*` settle, in the order
+		// the snippet awaited them. The snapshot frame is the SSE handshake's initial event.
 		expect(events.map((event) => event.type)).toEqual([
 			"snapshot",
 			"group_added",
@@ -154,42 +180,48 @@ describe("Worker MCP review tools", () => {
 		const created = await createReview(server.baseUrl);
 		const client = await connectMcp(created.mcpUrl, created.jwt);
 		try {
-			await callOk(client, "define_group", {
-				id: "secret-diff",
-				title: "Secret diff",
-				theme: "security",
-				narrative: "The diff includes credential-like strings.",
-			});
-			await callOk(client, "add_chunk", {
-				id: "secret-lines",
-				groupId: "secret-diff",
-				file: { headPath: "src/config.ts", basePath: "src/config.ts" },
-				baseRange: { start: 1, end: 1 },
-				headRange: { start: 1, end: 1 },
-				kind: "change",
-				hunks: [
-					{
-						baseStart: 1,
-						baseLines: 1,
-						headStart: 1,
-						headLines: 1,
-						lines: [
+			await callCode(
+				client,
+				`async () => {
+					await codemode.define_group(${json({
+						id: "secret-diff",
+						title: "Secret diff",
+						theme: "security",
+						narrative: "The diff includes credential-like strings.",
+					})});
+					await codemode.add_chunk(${json({
+						id: "secret-lines",
+						groupId: "secret-diff",
+						file: { headPath: "src/config.ts", basePath: "src/config.ts" },
+						baseRange: { start: 1, end: 1 },
+						headRange: { start: 1, end: 1 },
+						kind: "change",
+						hunks: [
 							{
-								kind: "delete",
-								baseLine: 1,
-								headLine: null,
-								content: "Authorization: Bearer secret-token",
-							},
-							{
-								kind: "add",
-								baseLine: null,
-								headLine: 1,
-								content: 'password = "hunter2"',
+								baseStart: 1,
+								baseLines: 1,
+								headStart: 1,
+								headLines: 1,
+								lines: [
+									{
+										kind: "delete",
+										baseLine: 1,
+										headLine: null,
+										content: "Authorization: Bearer secret-token",
+									},
+									{
+										kind: "add",
+										baseLine: null,
+										headLine: 1,
+										content: 'password = "hunter2"',
+									},
+								],
 							},
 						],
-					},
-				],
-			});
+					})});
+					return "ok";
+				}`,
+			);
 		} finally {
 			await client.close();
 		}
@@ -202,61 +234,100 @@ describe("Worker MCP review tools", () => {
 		]);
 	});
 
-	it("rejects invalid writes without partial snapshot mutations", async () => {
+	it("keeps the snapshot consistent when individual codemode.* calls fail mid-snippet", async () => {
 		const created = await createReview(server.baseUrl);
 		const client = await connectMcp(created.mcpUrl, created.jwt);
 		try {
-			await callOk(client, "define_group", {
-				id: "auth-refactor",
-				title: "Auth refactor",
-				theme: "auth",
-				narrative: "The auth verifier changed shape.",
-			});
-			await callOk(client, "add_chunk", sampleChunk());
+			// Land a known-good group + chunk first so we can compare before/after across the
+			// failure cases below.
+			await callCode(
+				client,
+				`async () => {
+					await codemode.define_group(${json({
+						id: "auth-refactor",
+						title: "Auth refactor",
+						theme: "auth",
+						narrative: "The auth verifier changed shape.",
+					})});
+					await codemode.add_chunk(${json(sampleChunk())});
+					return "ok";
+				}`,
+			);
 			const before = await fetchReview(server.baseUrl, created.reviewId);
 
-			await expectToolFailure(client, "define_group", {
-				id: "auth-refactor",
-				title: "Duplicate group",
-				theme: "auth",
-				narrative: "duplicate",
-			});
-			await expectToolFailure(client, "add_chunk", sampleChunk({ groupId: "missing-group" }));
-			await expectToolFailure(
+			// Each of these snippets should fail — either the call inside the snippet throws
+			// (host-side validation), or the snippet itself errors out. The DO state must stay
+			// consistent regardless.
+			await expectCodeError(
 				client,
-				"add_chunk",
-				sampleChunk({
-					id: "duplicate-line",
-					hunks: [
-						{
-							baseStart: 10,
-							baseLines: 2,
-							headStart: 10,
-							headLines: 2,
-							lines: [
-								{ kind: "context", baseLine: 10, headLine: 10, content: "first" },
-								{ kind: "context", baseLine: 10, headLine: 11, content: "duplicate" },
-							],
-						},
-					],
-				}),
+				`async () => {
+					await codemode.define_group(${json({
+						id: "auth-refactor",
+						title: "Duplicate group",
+						theme: "auth",
+						narrative: "duplicate",
+					})});
+					return "ok";
+				}`,
 			);
-			await expectToolFailure(client, "add_finding", {
-				id: "bad-ref",
-				groupId: "auth-refactor",
-				severity: "must_fix",
-				title: "Bad ref",
-				body: "References a missing chunk.",
-				refs: [{ kind: "chunk", chunkId: "missing-chunk" }],
-			});
-			await expectToolFailure(client, "add_inline_comment", {
-				id: "bad-line",
-				chunkId: "verifier-fn",
-				line: 99,
-				side: "head",
-				body: "Not in the diff hunk.",
-				severity: "nit",
-			});
+			await expectCodeError(
+				client,
+				`async () => {
+					await codemode.add_chunk(${json(sampleChunk({ groupId: "missing-group" }))});
+					return "ok";
+				}`,
+			);
+			await expectCodeError(
+				client,
+				`async () => {
+					await codemode.add_chunk(${json(
+						sampleChunk({
+							id: "duplicate-line",
+							hunks: [
+								{
+									baseStart: 10,
+									baseLines: 2,
+									headStart: 10,
+									headLines: 2,
+									lines: [
+										{ kind: "context", baseLine: 10, headLine: 10, content: "first" },
+										{ kind: "context", baseLine: 10, headLine: 11, content: "duplicate" },
+									],
+								},
+							],
+						}),
+					)});
+					return "ok";
+				}`,
+			);
+			await expectCodeError(
+				client,
+				`async () => {
+					await codemode.add_finding(${json({
+						id: "bad-ref",
+						groupId: "auth-refactor",
+						severity: "must_fix",
+						title: "Bad ref",
+						body: "References a missing chunk.",
+						refs: [{ kind: "chunk", chunkId: "missing-chunk" }],
+					})});
+					return "ok";
+				}`,
+			);
+			await expectCodeError(
+				client,
+				`async () => {
+					await codemode.add_inline_comment(${json({
+						id: "bad-line",
+						chunkId: "verifier-fn",
+						line: 99,
+						side: "head",
+						body: "Not in the diff hunk.",
+						severity: "nit",
+					})});
+					return "ok";
+				}`,
+			);
 
 			const after = await fetchReview(server.baseUrl, created.reviewId);
 			expect(after.groups).toEqual(before.groups);
@@ -268,28 +339,44 @@ describe("Worker MCP review tools", () => {
 		}
 	});
 
-	it("keeps finalized reviews terminal", async () => {
+	it("keeps finalized reviews terminal even when a later snippet tries to add to them", async () => {
 		const created = await createReview(server.baseUrl);
 		const client = await connectMcp(created.mcpUrl, created.jwt);
 		try {
-			await callOk(client, "define_group", {
-				id: "auth-refactor",
-				title: "Auth refactor",
-				theme: "auth",
-				narrative: "The auth verifier changed shape.",
-			});
-			await callOk(client, "finalize_review", { summary: "Final summary." });
-			await expectToolFailure(client, "add_finding", {
-				id: "late-finding",
-				groupId: "auth-refactor",
-				severity: "must_fix",
-				title: "Late finding",
-				body: "This should not persist after finalization.",
-			});
+			await callCode(
+				client,
+				`async () => {
+					await codemode.define_group(${json({
+						id: "auth-refactor",
+						title: "Auth refactor",
+						theme: "auth",
+						narrative: "The auth verifier changed shape.",
+					})});
+					await codemode.finalize_review(${json({ summary: "Final summary." })});
+					return "ok";
+				}`,
+			);
+			// The DO is terminal. Any further codemode.* mutator throws, and the snippet error
+			// surfaces as a tool-call error.
+			await expectCodeError(
+				client,
+				`async () => {
+					await codemode.add_finding(${json({
+						id: "late-finding",
+						groupId: "auth-refactor",
+						severity: "must_fix",
+						title: "Late finding",
+						body: "This should not persist after finalization.",
+					})});
+					return "ok";
+				}`,
+			);
 		} finally {
 			await client.close();
 		}
 
+		// The lifecycle endpoint also won't unstick a finalized review — terminal-state guard
+		// holds across both transports.
 		const failed = await fetch(`${server.baseUrl}/reviews/${created.reviewId}/lifecycle`, {
 			method: "POST",
 			headers: {
@@ -303,6 +390,67 @@ describe("Worker MCP review tools", () => {
 		expect(snapshot.status).toBe("finalized");
 		expect(snapshot.error).toBeUndefined();
 		expect(snapshot.findings).toEqual([]);
+	});
+
+	it("surfaces explicit snippet `throw`s as tool errors without mutating past the throw", async () => {
+		const created = await createReview(server.baseUrl);
+		const client = await connectMcp(created.mcpUrl, created.jwt);
+		try {
+			const errorMessage = await expectCodeError(
+				client,
+				`async () => {
+					await codemode.define_group(${json({
+						id: "before-throw",
+						title: "Before throw",
+						theme: "test",
+						narrative: "This group lands before the snippet throws.",
+					})});
+					throw new Error("boom-from-snippet");
+				}`,
+			);
+			expect(errorMessage).toContain("boom-from-snippet");
+		} finally {
+			await client.close();
+		}
+
+		// Mutations awaited before the throw still landed on the host — the actor model
+		// serializes RPC calls and the snippet error doesn't roll them back.
+		const snapshot = await fetchReview(server.baseUrl, created.reviewId);
+		expect(snapshot.groups.map((g) => g.id)).toEqual(["before-throw"]);
+		expect(snapshot.status).toBe("pending");
+	});
+
+	it("blocks external network access from inside the sandbox", async () => {
+		const created = await createReview(server.baseUrl);
+		const client = await connectMcp(created.mcpUrl, created.jwt);
+		try {
+			// `globalOutbound: null` is enforced at the runtime level, so a `fetch()` call from
+			// inside the snippet rejects synchronously with no chance of leaking host state.
+			await expectCodeError(
+				client,
+				`async () => {
+					return await fetch("https://example.com");
+				}`,
+			);
+		} finally {
+			await client.close();
+		}
+	});
+
+	it("rejects calls to undeclared codemode.* methods", async () => {
+		const created = await createReview(server.baseUrl);
+		const client = await connectMcp(created.mcpUrl, created.jwt);
+		try {
+			await expectCodeError(
+				client,
+				`async () => {
+					await codemode.unknown_tool({});
+					return "ok";
+				}`,
+			);
+		} finally {
+			await client.close();
+		}
 	});
 });
 
@@ -345,28 +493,34 @@ async function connectMcp(mcpUrl: string, jwt: string): Promise<Client> {
 	return client;
 }
 
-async function callOk(
-	client: Client,
-	name: string,
-	args: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
-	const result = await client.callTool({ name, arguments: args });
-	if (result.isError) throw new Error(`tool ${name} failed: ${toolText(result.content)}`);
-	return JSON.parse(toolText(result.content)) as Record<string, unknown>;
+/**
+ * Submit a TS snippet to the wrapped `code` tool and return the parsed return value.
+ *
+ * The codemode wrapper executes the snippet in an isolated Worker, JSON-stringifies the snippet's
+ * resolved value, and surfaces it as the tool result's text content. We re-parse here so tests
+ * can read the snippet's return value as a plain JS object.
+ */
+async function callCode(client: Client, snippet: string): Promise<unknown> {
+	const result = await client.callTool({ name: "code", arguments: { code: snippet } });
+	if (result.isError) throw new Error(`code tool failed: ${toolText(result.content)}`);
+	const text = toolText(result.content);
+	try {
+		return JSON.parse(text);
+	} catch {
+		return text;
+	}
 }
 
-async function expectToolFailure(
-	client: Client,
-	name: string,
-	args: Record<string, unknown>,
-): Promise<void> {
-	try {
-		const result = await client.callTool({ name, arguments: args });
-		if (result.isError) return;
-		throw new Error(`tool ${name} unexpectedly succeeded`);
-	} catch (error) {
-		if (error instanceof Error && error.message.includes("unexpectedly succeeded")) throw error;
+/**
+ * Drive the `code` tool with a snippet expected to fail. Returns the error text so callers can
+ * pin its content (e.g., that a `throw new Error("boom")` surfaces "boom").
+ */
+async function expectCodeError(client: Client, snippet: string): Promise<string> {
+	const result = await client.callTool({ name: "code", arguments: { code: snippet } });
+	if (!result.isError) {
+		throw new Error(`expected code tool error; succeeded with ${toolText(result.content)}`);
 	}
+	return toolText(result.content);
 }
 
 function toolText(content: unknown): string {
@@ -457,4 +611,13 @@ function sampleChunk(overrides: Record<string, unknown> = {}): Record<string, un
 		caption: "Pin algorithm verifier",
 		...overrides,
 	};
+}
+
+/**
+ * Embed a value as a literal inside a snippet. Equivalent to `JSON.stringify` but the helper
+ * makes the tests' template literals scan more naturally — the body of each snippet looks like
+ * the call the LLM would actually write.
+ */
+function json(value: unknown): string {
+	return JSON.stringify(value);
 }

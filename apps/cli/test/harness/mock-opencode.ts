@@ -6,7 +6,27 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
-type Mode = "success" | "missing-finalize" | "non-zero" | "bad-mcp-token" | "hang";
+/**
+ * Modes the harness can run in. Each mode exists to drive a specific failure path through the
+ * CLI; defaults are tuned so the e2e tests can pin both happy- and sad-path persisted state.
+ *
+ *   - success           : full review snippet covering all six review ops; CLI sees finalized.
+ *   - missing-finalize  : everything except `finalize_review`; CLI's snapshot check fails the
+ *                         review because the persisted status isn't `finalized`.
+ *   - non-zero          : process exits non-zero before any MCP traffic; lifecycle reports failed.
+ *   - bad-mcp-token     : sends an invalid Authorization header; the `code` tool call 401s.
+ *   - hang              : process never makes the MCP call; CLI's --timeout-ms triggers.
+ *   - snippet-throws    : snippet defines a group + chunk, then `throw new Error(...)`; the host
+ *                         sees the partial mutations land, the CLI sees an isError tool result,
+ *                         and finalize never runs so snapshot verification fails the review.
+ */
+type Mode =
+	| "success"
+	| "missing-finalize"
+	| "non-zero"
+	| "bad-mcp-token"
+	| "hang"
+	| "snippet-throws";
 
 interface ReviewMcpConfig {
 	type: "remote";
@@ -52,54 +72,10 @@ async function main(): Promise<void> {
 	await client.connect(transport as unknown as Transport);
 
 	console.log(JSON.stringify({ type: "started" }));
-	await call(client, "define_group", {
-		id: "mock-review",
-		title: "Mock review",
-		theme: "test",
-		narrative: "The mock exercised the MCP tools.",
-	});
-	await call(client, "add_chunk", {
-		id: "app-change",
-		groupId: "mock-review",
-		file: { headPath: "src/app.ts", basePath: "src/app.ts" },
-		baseRange: { start: 1, end: 1 },
-		headRange: { start: 1, end: 1 },
-		kind: "change",
-		hunks: [
-			{
-				header: "@@ -1,1 +1,1 @@",
-				baseStart: 1,
-				baseLines: 1,
-				headStart: 1,
-				headLines: 1,
-				lines: [
-					{ kind: "delete", baseLine: 1, headLine: null, content: "export const value = 'base';" },
-					{ kind: "add", baseLine: null, headLine: 1, content: "export const value = 'head';" },
-				],
-			},
-		],
-		caption: "Changed app value",
-	});
-	await call(client, "add_finding", {
-		id: "mock-finding",
-		groupId: "mock-review",
-		severity: "consider",
-		title: "Mock finding",
-		body: "This deterministic finding proves the mock wrote through MCP.",
-		refs: [{ kind: "chunk", chunkId: "app-change" }],
-	});
-	await call(client, "add_inline_comment", {
-		id: "mock-comment",
-		chunkId: "app-change",
-		line: 1,
-		side: "head",
-		body: "Inline mock comment.",
-		severity: "nit",
-	});
-	await call(client, "set_narrative", { summary: "Mock review summary." });
-	if (mode !== "missing-finalize") {
-		await call(client, "finalize_review", { summary: "Mock review finalized." });
-	}
+	// One outer `code` tool call carries the whole review. The host serializes the inner
+	// `codemode.*` dispatches and emits one SSE event per await, so the CLI's progress UX is
+	// driven exactly the same as it was on the per-tool surface.
+	await callCode(client, buildSnippet(mode));
 	await client.close();
 	console.log(JSON.stringify({ type: "finished" }));
 }
@@ -135,6 +111,10 @@ function assertReviewToolsEnabled(config: unknown): void {
 		tools?: Record<string, boolean>;
 		agent?: { review?: { tools?: Record<string, boolean> } };
 	};
+	// The OpenCode config emitter uses a `review_*` glob for both top-level and per-agent tool
+	// allow-lists. The on-the-wire tool name is `review_code` (server-name prefix + tool name);
+	// the glob covers it. If a future change tightens this to an explicit list, this assertion
+	// fails and surfaces the regression before the CLI ships.
 	if (typed.tools?.["review_*"] !== true) throw new Error("review MCP tools not enabled globally");
 	if (typed.agent?.review?.tools?.["review_*"] !== true) {
 		throw new Error("review MCP tools not enabled for review agent");
@@ -168,9 +148,109 @@ async function assertMcpTokenCannotUseLifecycle(
 		throw new Error(`MCP token unexpectedly used lifecycle: ${response.status}`);
 }
 
-async function call(client: Client, name: string, args: Record<string, unknown>): Promise<void> {
-	const result = await client.callTool({ name, arguments: args });
-	if (result.isError) throw new Error(`tool ${name} failed: ${JSON.stringify(result.content)}`);
+/**
+ * Build a deterministic TS snippet for the requested mode. The shape matches what we want
+ * OpenCode itself to produce in production: an async arrow function that awaits each
+ * `codemode.*` call sequentially. The harness uses literal JSON arguments because the test asserts
+ * the persisted snapshot verbatim.
+ */
+function buildSnippet(mode: Exclude<Mode, "non-zero" | "hang">): string {
+	const defineGroup = `await codemode.define_group(${JSON.stringify({
+		id: "mock-review",
+		title: "Mock review",
+		theme: "test",
+		narrative: "The mock exercised the MCP tools.",
+	})});`;
+
+	const addChunk = `await codemode.add_chunk(${JSON.stringify({
+		id: "app-change",
+		groupId: "mock-review",
+		file: { headPath: "src/app.ts", basePath: "src/app.ts" },
+		baseRange: { start: 1, end: 1 },
+		headRange: { start: 1, end: 1 },
+		kind: "change",
+		hunks: [
+			{
+				header: "@@ -1,1 +1,1 @@",
+				baseStart: 1,
+				baseLines: 1,
+				headStart: 1,
+				headLines: 1,
+				lines: [
+					{ kind: "delete", baseLine: 1, headLine: null, content: "export const value = 'base';" },
+					{ kind: "add", baseLine: null, headLine: 1, content: "export const value = 'head';" },
+				],
+			},
+		],
+		caption: "Changed app value",
+	})});`;
+
+	const addFinding = `await codemode.add_finding(${JSON.stringify({
+		id: "mock-finding",
+		groupId: "mock-review",
+		severity: "consider",
+		title: "Mock finding",
+		body: "This deterministic finding proves the mock wrote through MCP.",
+		refs: [{ kind: "chunk", chunkId: "app-change" }],
+	})});`;
+
+	const addInline = `await codemode.add_inline_comment(${JSON.stringify({
+		id: "mock-comment",
+		chunkId: "app-change",
+		line: 1,
+		side: "head",
+		body: "Inline mock comment.",
+		severity: "nit",
+	})});`;
+
+	const setNarrative = `await codemode.set_narrative(${JSON.stringify({
+		summary: "Mock review summary.",
+	})});`;
+
+	const finalize = `await codemode.finalize_review(${JSON.stringify({
+		summary: "Mock review finalized.",
+	})});`;
+
+	if (mode === "snippet-throws") {
+		return `async () => {
+			${defineGroup}
+			${addChunk}
+			throw new Error("mock-snippet-failure");
+		}`;
+	}
+
+	if (mode === "missing-finalize") {
+		return `async () => {
+			${defineGroup}
+			${addChunk}
+			${addFinding}
+			${addInline}
+			${setNarrative}
+			return "missing-finalize";
+		}`;
+	}
+
+	// success / bad-mcp-token both run the full snippet; bad-mcp-token never reaches the
+	// snippet body because the transport rejects on first request.
+	return `async () => {
+		${defineGroup}
+		${addChunk}
+		${addFinding}
+		${addInline}
+		${setNarrative}
+		${finalize}
+		return "ok";
+	}`;
+}
+
+async function callCode(client: Client, snippet: string): Promise<void> {
+	const result = await client.callTool({ name: "code", arguments: { code: snippet } });
+	if (result.isError) {
+		const text = (Array.isArray(result.content) ? result.content[0] : undefined) as
+			| { text?: string }
+			| undefined;
+		throw new Error(`code tool failed: ${text?.text ?? JSON.stringify(result.content)}`);
+	}
 }
 
 main().catch((error) => {

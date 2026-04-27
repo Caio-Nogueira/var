@@ -36,6 +36,13 @@ local                                       Cloudflare
   - Within a group: narrative → chunks → findings.
 - **Phase 2 (structural completeness contract):** deferred. Pulled off the shelf only if real
   diffs reveal the agent silently dropping files.
+- **Code Mode rework:** DONE. See
+  `docs/plans/2026-04-27-001-refactor-mcp-codemode-rework-plan.md`. The Worker now exposes a
+  single `code` MCP tool (Cloudflare Code Mode's `codeMcpServer`) instead of six per-operation
+  tools. OpenCode writes a TypeScript snippet that calls `codemode.*` methods; each call
+  dispatches to the host via Workers RPC and lands in the same DO mutators as before. Rationale:
+  ergonomic chaining via TS snippets beats many discrete tool calls; token savings are a side
+  effect. `@cloudflare/codemode` is beta and pinned exactly.
 
 `apps/worker/scripts/smoke.ts` exercises the full flow against `wrangler dev` (already passing).
 
@@ -51,7 +58,13 @@ local                                       Cloudflare
 
 ### MCP tools (all working)
 
-`define_group`, `add_chunk`, `add_finding`, `add_inline_comment`, `set_narrative`, `finalize_review`. Inputs validated by `@review-agent/schema` Zod schemas; foreign-key refs (groupId, chunkId) and slug uniqueness enforced inside DO.
+The on-the-wire surface is a single `code` tool produced by `@cloudflare/codemode`'s
+`codeMcpServer` wrapper. Inside the snippet, OpenCode calls `codemode.define_group`,
+`codemode.add_chunk`, `codemode.add_finding`, `codemode.add_inline_comment`,
+`codemode.set_narrative`, and `codemode.finalize_review`; each call dispatches back to the same
+DO mutator the per-tool surface used. Inputs are still validated by `@review-agent/schema` Zod
+schemas; foreign-key refs (`groupId`, `chunkId`) and slug uniqueness are still enforced inside
+the DO. The `code` snippet runs in a `WorkerLoader` sandbox with `globalOutbound: null`.
 
 ## Repo layout
 

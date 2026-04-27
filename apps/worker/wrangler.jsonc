@@ -27,6 +27,14 @@
 	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ReviewAgent"] }],
 
 	/**
+	 * Code Mode sandbox loader. Used by `@cloudflare/codemode` to spin up an isolated
+	 * Worker per `code` MCP tool call so the LLM-authored TypeScript snippet runs without
+	 * sharing the host's globals or network access. The codemode wrapper dispatches
+	 * `codemode.*` calls back to the host via Workers RPC, not via this loader.
+	 */
+	"worker_loaders": [{ "binding": "LOADER" }],
+
+	/**
 	 * SPA assets. apps/web/dist is the Vite build output (created by `pnpm --filter
 	 * @review-agent/web build`). With `not_found_handling: "single-page-application"`
 	 * navigation requests for /r/:id automatically serve index.html without invoking

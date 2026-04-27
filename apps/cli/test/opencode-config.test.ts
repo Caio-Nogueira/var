@@ -41,4 +41,28 @@ describe("buildOpenCodeConfig", () => {
 		expect(bash["git blame*"]).toBe("allow");
 		expect(bash["*"]).toBe("deny");
 	});
+
+	// The Worker exposes a single MCP tool, `code` (produced by `@cloudflare/codemode`'s
+	// `codeMcpServer` wrapper). OpenCode prefixes MCP-server tool names with the configured
+	// server name, so the on-the-wire name is `review_code`. The `review_*` glob covers it.
+	// If a future change tightens the allow-list to an explicit per-tool list, this assertion
+	// fails loudly — pointing the editor at the dependency on the glob.
+	it("enables the `review_code` Code Mode tool via the existing review_* glob", () => {
+		const config = buildOpenCodeConfigObject({
+			mcpUrl: "http://localhost:8787/mcp",
+			mcpJwt: "jwt",
+		});
+		const tools = config.tools as Record<string, boolean>;
+		const agentTools = (config.agent as { review: { tools: Record<string, boolean> } }).review
+			.tools;
+
+		// Glob match: both top-level and per-agent allow-lists must allow `review_code`. The
+		// fnmatch-style `review_*` pattern matches `review_code`; we assert the glob is present
+		// (the matching itself is OpenCode's responsibility, but the glob's presence is ours).
+		expect(tools["review_*"]).toBe(true);
+		expect(agentTools["review_*"]).toBe(true);
+		// Defensive: there should NOT be a stricter per-tool entry that would shadow the glob.
+		expect(tools["review_code"]).toBeUndefined();
+		expect(agentTools["review_code"]).toBeUndefined();
+	});
 });

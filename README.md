@@ -15,14 +15,28 @@ local machine                                  Cloudflare
 |  - spawns opencode |                         |  ReviewAgent (DO)     |
 |                    |                         |   - state             |
 |     opencode       |  MCP /mcp (Bearer JWT)  |   - SSE broadcast     |
-|     (review agent) | --------------------->  |   - typed tools:      |
-|                    |                         |     define_group,     |
-|                    |                         |     add_finding, ...  |
+|     (review agent) | --------------------->  |   - one `code` tool   |
+|                    |                         |     (Code Mode)       |
+|                    |                         |     wrapping six      |
+|                    |                         |     review ops        |
 +--------------------+                         |                       |
                                                |  GET /reviews/:id     |
 browser <- SSE/static SPA  -------------------- |  GET /r/:id           |
                                                +-----------------------+
 ```
+
+## MCP surface (Code Mode)
+
+The Worker exposes its review tools through a single MCP tool, `code`, produced by
+[Cloudflare Code Mode](https://developers.cloudflare.com/agents/api-reference/codemode/)'s
+`codeMcpServer` wrapper. OpenCode writes a small TypeScript async arrow function that calls
+typed `codemode.*` methods (`define_group`, `add_chunk`, `add_finding`, `add_inline_comment`,
+`set_narrative`, `finalize_review`); the snippet runs in an isolated `WorkerLoader` sandbox and
+each `codemode.*` call dispatches back to the Durable Object via Workers RPC. The host-side
+mutators, schemas, JWT auth, and SSE event flow are all unchanged — only the on-the-wire tool
+shape is different.
+
+`@cloudflare/codemode` is **beta**; the dependency is pinned exactly so upgrades are deliberate.
 
 ## Packages
 
