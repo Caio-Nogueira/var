@@ -76,7 +76,7 @@ describe("review CLI e2e", () => {
 				findingIds: ["mock-finding"],
 				commentIds: ["mock-comment"],
 			});
-			expect(snapshot.chunks[0]).toEqual({
+			expect(snapshot.chunks[0]).toMatchObject({
 				id: "app-change",
 				groupId: "mock-review",
 				file: { headPath: "src/app.ts", basePath: "src/app.ts" },
@@ -84,30 +84,26 @@ describe("review CLI e2e", () => {
 				headRange: { start: 1, end: 1 },
 				kind: "change",
 				caption: "Changed app value",
-				hunks: [
-					{
-						header: "@@ -1,1 +1,1 @@",
-						baseStart: 1,
-						baseLines: 1,
-						headStart: 1,
-						headLines: 1,
-						lines: [
-							{
-								kind: "delete",
-								baseLine: 1,
-								headLine: null,
-								content: "export const value = 'base';",
-							},
-							{
-								kind: "add",
-								baseLine: null,
-								headLine: 1,
-								content: "export const value = 'head';",
-							},
-						],
-					},
-				],
 			});
+			// Under materialization, the host fills in `hunks[]` from the actual unified diff.
+			// The fixture's diff for src/app.ts is `'base';` → `'head';`, which the host
+			// materializes into a single hunk containing one delete + one add line. Strict
+			// shape coverage of `parse-diff` output lives in `diff-index.test.ts`; here we
+			// just confirm the structural pipe-through end-to-end.
+			expect(snapshot.chunks[0]?.hunks).toHaveLength(1);
+			const hunk = snapshot.chunks[0]?.hunks[0];
+			expect(hunk?.lines).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						kind: "delete",
+						content: "export const value = 'base';",
+					}),
+					expect.objectContaining({
+						kind: "add",
+						content: "export const value = 'head';",
+					}),
+				]),
+			);
 			expect(snapshot.findings[0]).toMatchObject({
 				id: "mock-finding",
 				groupId: "mock-review",
@@ -221,35 +217,6 @@ describe("review CLI e2e", () => {
 		}
 	}, 60_000);
 
-	// U6 — full CLI → Worker → agent loop with the mock submitting fabricated chunk content.
-	// The Worker's diff-fidelity validator (U4) rejects the chunk with a structured
-	// `diff_mismatch` payload, the snippet's `code` tool call returns `isError: true`, OpenCode
-	// exits non-zero, and the CLI marks the review failed. This is the precise failure mode
-	// the validator was added to catch — the production bug it mirrors is an agent replacing
-	// real diff lines with synthetic glosses like `// + 20-line cron block: addRaw…`.
-	it("rejects the review when the agent submits a chunk whose content disagrees with the diff", async () => {
-		const fixture = await createGitFixture();
-		try {
-			const result = await runCli(fixture, { REVIEW_AGENT_MOCK_MODE: "bad-content" });
-			expect(result.exitCode).toBe(1);
-			// The structured payload threads through the snippet's error → OpenCode stderr →
-			// the CLI's failure message → the persisted review.error. We assert on the payload
-			// keys so a future change to the envelope shape catches this test deliberately.
-			expect(result.stderr).toContain('"code":"diff_mismatch"');
-			expect(result.stderr).toContain('"reason":"content_mismatch"');
-			expect(result.stderr).toContain('"file":"src/app.ts"');
-
-			const snapshot = await fetchSnapshot(result.stdout);
-			expect(snapshot.status).toBe("failed");
-			expect(snapshot.error).toContain("diff_mismatch");
-			// The chunk was rejected before insert — nothing past `define_group` landed.
-			expect(snapshot.chunks).toEqual([]);
-			expect(snapshot.findings).toEqual([]);
-		} finally {
-			await fixture.cleanup();
-		}
-	}, 60_000);
-
 	it("aborts before spawning OpenCode when the diff exceeds --max-diff-bytes", async () => {
 		// Failure has to surface BEFORE the agent runs because once the diff is in flight, the
 		// validator on the Worker can't enforce a smaller cap than what made it through. The
@@ -293,11 +260,9 @@ describe("review CLI e2e", () => {
 					// (not the committed value 'head').
 					REVIEW_AGENT_MOCK_EXPECT_FILE_PATH: "src/app.ts",
 					REVIEW_AGENT_MOCK_EXPECT_FILE_CONTENT: "export const value = 'wt-modified';\n",
-					// In --working-tree mode the diff is HEAD ('head') vs. the synthetic snapshot
-					// commit ('wt-modified'), so the mock's chunk content must match that diff —
-					// otherwise the Worker's fidelity validator (U4) would reject the chunk.
-					REVIEW_AGENT_MOCK_DELETE_CONTENT: "export const value = 'head';",
-					REVIEW_AGENT_MOCK_ADD_CONTENT: "export const value = 'wt-modified';",
+					// Under materialization, the mock just submits a range; the Worker fills in
+					// content from the indexed working-tree-vs-HEAD diff, so the snippet doesn't
+					// need to know anything about the actual file content here.
 				},
 				mockOpenCodeBin,
 				8000,

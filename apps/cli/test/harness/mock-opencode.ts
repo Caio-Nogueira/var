@@ -19,13 +19,11 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
  *   - snippet-throws    : snippet defines a group + chunk, then `throw new Error(...)`; the host
  *                         sees the partial mutations land, the CLI sees an isError tool result,
  *                         and finalize never runs so snapshot verification fails the review.
- *   - bad-content       : full snippet but the chunk's add-line content is fabricated (does not
- *                         match the actual diff). The Worker's diff-fidelity validator rejects
- *                         the chunk with a structured `diff_mismatch` payload; finalize never
- *                         runs and the CLI sees the snapshot stuck in non-finalized status.
  *
- * Chunk-line content is configurable via env vars so each scenario can declare what its actual
- * diff contains. Defaults match the standard git fixture (base→head).
+ * Under the materialization contract, the agent submits ranges only — the host fills in the
+ * actual diff content from the indexed unified diff. The mock therefore doesn't author hunk
+ * content; what gets persisted is whatever the Worker's `materializeChunk` produces from the
+ * fixture's real diff.
  */
 type Mode =
 	| "success"
@@ -33,8 +31,7 @@ type Mode =
 	| "non-zero"
 	| "bad-mcp-token"
 	| "hang"
-	| "snippet-throws"
-	| "bad-content";
+	| "snippet-throws";
 
 interface ReviewMcpConfig {
 	type: "remote";
@@ -162,30 +159,17 @@ async function assertMcpTokenCannotUseLifecycle(
  * `codemode.*` call sequentially. The harness uses literal JSON arguments because the test asserts
  * the persisted snapshot verbatim.
  *
- * Chunk-line content for `src/app.ts` is configurable via env so each test scenario can declare
- * what its actual diff contains — the Worker's diff-fidelity validator (see U4) rejects chunks
- * whose lines disagree with the real `git diff`, so the mock has to match the fixture's diff.
+ * Under materialization, the agent submits a `ChunkInput` with ranges only; the host materializes
+ * hunks from the indexed unified diff. The fixture's diff is the source of truth for chunk
+ * content, so this snippet is independent of whatever lines the fixture actually produced.
  */
 function buildSnippet(mode: Exclude<Mode, "non-zero" | "hang">): string {
-	// Defaults match the standard `createGitFixture` output where base content is 'base' and
-	// head content is 'head'. Working-tree tests override via env vars because their actual
-	// diff is HEAD ('head') vs. the synthetic working-tree commit (whatever the test wrote).
-	const deleteContent =
-		process.env.REVIEW_AGENT_MOCK_DELETE_CONTENT ?? "export const value = 'base';";
-	const addContent = process.env.REVIEW_AGENT_MOCK_ADD_CONTENT ?? "export const value = 'head';";
-
 	const defineGroup = `await codemode.define_group(${JSON.stringify({
 		id: "mock-review",
 		title: "Mock review",
 		theme: "test",
 		narrative: "The mock exercised the MCP tools.",
 	})});`;
-
-	// `bad-content` mode swaps the add line for a synthetic gloss — the validator's load-bearing
-	// failure path. Real OpenCode would never write this, but it mirrors the production bug
-	// (agent replacing diff lines with prose) that motivated the fidelity validator.
-	const effectiveAddContent =
-		mode === "bad-content" ? "// + synthetic gloss instead of the actual diff line" : addContent;
 
 	const addChunk = `await codemode.add_chunk(${JSON.stringify({
 		id: "app-change",
@@ -194,19 +178,6 @@ function buildSnippet(mode: Exclude<Mode, "non-zero" | "hang">): string {
 		baseRange: { start: 1, end: 1 },
 		headRange: { start: 1, end: 1 },
 		kind: "change",
-		hunks: [
-			{
-				header: "@@ -1,1 +1,1 @@",
-				baseStart: 1,
-				baseLines: 1,
-				headStart: 1,
-				headLines: 1,
-				lines: [
-					{ kind: "delete", baseLine: 1, headLine: null, content: deleteContent },
-					{ kind: "add", baseLine: null, headLine: 1, content: effectiveAddContent },
-				],
-			},
-		],
 		caption: "Changed app value",
 	})});`;
 
@@ -241,19 +212,6 @@ function buildSnippet(mode: Exclude<Mode, "non-zero" | "hang">): string {
 			${defineGroup}
 			${addChunk}
 			throw new Error("mock-snippet-failure");
-		}`;
-	}
-
-	if (mode === "bad-content") {
-		// Full snippet right up to the chunk insert. The chunk fails diff fidelity and the
-		// snippet's `await codemode.add_chunk(...)` throws — finalize never runs, the host
-		// stays non-terminal, and the CLI sees the snapshot's status remain 'running'. The
-		// thrown error carries the structured `diff_mismatch` payload so the agent could in
-		// principle retry; the mock just lets it propagate.
-		return `async () => {
-			${defineGroup}
-			${addChunk}
-			return "should-not-reach-here";
 		}`;
 	}
 

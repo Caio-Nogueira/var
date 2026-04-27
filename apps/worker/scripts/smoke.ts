@@ -34,6 +34,24 @@ interface CreateReviewResponse {
 }
 
 async function main() {
+	// Tiny unified diff that aligns with the chunk submitted below: src/auth/verify.ts is
+	// indexed with a 4-line head extent so the chunk's `headRange: { start: 10, end: 35 }`
+	// overlaps the materialized hunk. Without a real diff, materialization rejects the chunk
+	// with `file_unknown`.
+	const unifiedDiff = [
+		"diff --git a/src/auth/verify.ts b/src/auth/verify.ts",
+		"index 1234567..89abcde 100644",
+		"--- a/src/auth/verify.ts",
+		"+++ b/src/auth/verify.ts",
+		"@@ -10,3 +10,4 @@",
+		" export function verify() {",
+		"-  return jwtVerify(token);",
+		"+  return jwtVerify(token, { algorithms: ['HS256'] });",
+		" }",
+		"+",
+		"",
+	].join("\n");
+
 	console.log(`-> POST ${BASE}/reviews`);
 	const createRes = await fetch(`${BASE}/reviews`, {
 		method: "POST",
@@ -43,6 +61,7 @@ async function main() {
 			base: { ref: "main", sha: "0".repeat(40) },
 			head: { ref: "feature/x", sha: "1".repeat(40) },
 			totalFiles: 1,
+			unifiedDiff,
 		}),
 	});
 	if (!createRes.ok) throw new Error(`create failed ${createRes.status}: ${await createRes.text()}`);
@@ -92,30 +111,9 @@ async function main() {
 			id: "verifier-fn",
 			groupId: "auth-refactor",
 			file: { headPath: "src/auth/verify.ts", basePath: "src/auth/verify.ts" },
-			baseRange: { start: 10, end: 30 },
-			headRange: { start: 10, end: 35 },
+			baseRange: { start: 10, end: 12 },
+			headRange: { start: 10, end: 13 },
 			kind: "change",
-			hunks: [
-				{
-					header: "@@ -10,3 +10,4 @@",
-					baseStart: 10,
-					baseLines: 3,
-					headStart: 10,
-					headLines: 4,
-					lines: [
-						{ kind: "context", baseLine: 10, headLine: 10, content: "export function verify() {" },
-						{ kind: "delete", baseLine: 11, headLine: null, content: "  return jwtVerify(token);" },
-						{
-							kind: "add",
-							baseLine: null,
-							headLine: 11,
-							content: "  return jwtVerify(token, { algorithms: ['HS256'] });",
-						},
-						{ kind: "context", baseLine: 12, headLine: 12, content: "}" },
-						{ kind: "add", baseLine: null, headLine: 13, content: "" },
-					],
-				},
-			],
 			caption: "Inline the algorithm pin",
 		});
 		await codemode.add_finding({

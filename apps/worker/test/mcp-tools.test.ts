@@ -181,7 +181,20 @@ describe("Worker MCP review tools (Code Mode)", () => {
 	});
 
 	it("redacts secret-like diff line content before persistence", async () => {
-		const created = await createReview(server.baseUrl);
+		// Under materialization, the secret content lives in the unified diff — not in the
+		// agent's chunk submission. The host materializes the chunk's hunks from the indexed
+		// diff, then runs `redactSecretLikeText` over each line's content before insert. The
+		// chunk submission carries only ranges and metadata.
+		const secretDiff = [
+			"diff --git a/src/config.ts b/src/config.ts",
+			"--- a/src/config.ts",
+			"+++ b/src/config.ts",
+			"@@ -1,1 +1,1 @@",
+			"-Authorization: Bearer secret-token",
+			'+password = "hunter2"',
+			"",
+		].join("\n");
+		const created = await createReview(server.baseUrl, 1, secretDiff);
 		const client = await connectMcp(created.mcpUrl, created.jwt);
 		try {
 			await callCode(
@@ -200,28 +213,6 @@ describe("Worker MCP review tools (Code Mode)", () => {
 						baseRange: { start: 1, end: 1 },
 						headRange: { start: 1, end: 1 },
 						kind: "change",
-						hunks: [
-							{
-								baseStart: 1,
-								baseLines: 1,
-								headStart: 1,
-								headLines: 1,
-								lines: [
-									{
-										kind: "delete",
-										baseLine: 1,
-										headLine: null,
-										content: "Authorization: Bearer secret-token",
-									},
-									{
-										kind: "add",
-										baseLine: null,
-										headLine: 1,
-										content: 'password = "hunter2"',
-									},
-								],
-							},
-						],
 					})});
 					return "ok";
 				}`,
@@ -284,24 +275,29 @@ describe("Worker MCP review tools (Code Mode)", () => {
 					return "ok";
 				}`,
 			);
+			// `file_unknown`: the diff doesn't index `src/never-existed.ts`, so materialization
+			// rejects before any SQL touches the DO.
 			await expectCodeError(
 				client,
 				`async () => {
 					await codemode.add_chunk(${json(
 						sampleChunk({
-							id: "duplicate-line",
-							hunks: [
-								{
-									baseStart: 10,
-									baseLines: 2,
-									headStart: 10,
-									headLines: 2,
-									lines: [
-										{ kind: "context", baseLine: 10, headLine: 10, content: "first" },
-										{ kind: "context", baseLine: 10, headLine: 11, content: "duplicate" },
-									],
-								},
-							],
+							id: "wrong-file",
+							file: { headPath: "src/never-existed.ts", basePath: null },
+						}),
+					)});
+					return "ok";
+				}`,
+			);
+			// `range_outside_diff`: file is indexed but the agent's range misses every hunk.
+			await expectCodeError(
+				client,
+				`async () => {
+					await codemode.add_chunk(${json(
+						sampleChunk({
+							id: "wrong-range",
+							baseRange: { start: 9999, end: 9999 },
+							headRange: { start: 9999, end: 9999 },
 						}),
 					)});
 					return "ok";
@@ -321,6 +317,10 @@ describe("Worker MCP review tools (Code Mode)", () => {
 					return "ok";
 				}`,
 			);
+			// `verifier-fn`'s materialized hunk covers head lines 10–13 (per `sampleDiff()`).
+			// Line 99 is outside that range — the existing inline-comment anchor validator
+			// surfaces an anchor-not-found error. This is the U3 inline-comment recovery test
+			// scenario in regression form.
 			await expectCodeError(
 				client,
 				`async () => {
@@ -460,19 +460,17 @@ describe("Worker MCP review tools (Code Mode)", () => {
 		}
 	});
 
-	// U5 — when the agent submits an `add_chunk` whose line content disagrees with the actual
-	// unified diff, the host returns a structured JSON error envelope so the agent can read it
-	// programmatically on retry. The shape is `{ code, reason, file, side, line, expected,
-	// actual, chunkId }` and is part of the contract documented in the prompt.
-	it("surfaces add_chunk diff-fidelity rejections as a structured JSON error envelope", async () => {
-		// Tiny, hand-aligned diff: one head line at position 1 contains "real". A chunk that
-		// claims position 1's content is "fake" must be rejected with the structured error.
+	// U6 — error-path coverage for the four reason codes the materializer can throw. Each test
+	// pins the JSON envelope shape (`code: "diff_mismatch"`, the specific `reason`, plus
+	// reason-specific fields). The envelope is the contract surface OpenCode reads on retry.
+	it("returns reason: 'file_unknown' when add_chunk references a file not in the diff", async () => {
 		const unifiedDiff = [
-			"diff --git a/src/x.ts b/src/x.ts",
-			"--- a/src/x.ts",
-			"+++ b/src/x.ts",
-			"@@ -0,0 +1,1 @@",
-			"+real",
+			"diff --git a/src/known.ts b/src/known.ts",
+			"--- a/src/known.ts",
+			"+++ b/src/known.ts",
+			"@@ -1,1 +1,1 @@",
+			"-old",
+			"+new",
 			"",
 		].join("\n");
 		const created = await createReview(server.baseUrl, 1, unifiedDiff);
@@ -485,49 +483,30 @@ describe("Worker MCP review tools (Code Mode)", () => {
 						id: "g",
 						title: "G",
 						theme: "t",
-						narrative: "Single-file change.",
+						narrative: "n",
 					})});
 					return "ok";
 				}`,
 			);
-
 			const errorMessage = await expectCodeError(
 				client,
 				`async () => {
 					await codemode.add_chunk(${json({
-						id: "fake-chunk",
+						id: "ghost-chunk",
 						groupId: "g",
-						file: { headPath: "src/x.ts", basePath: null },
+						file: { headPath: "src/never-indexed.ts", basePath: null },
 						baseRange: { start: 0, end: -1 },
 						headRange: { start: 1, end: 1 },
 						kind: "change",
-						hunks: [
-							{
-								baseStart: 0,
-								baseLines: 0,
-								headStart: 1,
-								headLines: 1,
-								lines: [{ kind: "add", baseLine: null, headLine: 1, content: "fake" }],
-							},
-						],
 					})});
 					return "ok";
 				}`,
 			);
-
-			// The error message is the JSON payload (possibly wrapped by codemode's own framing).
-			// We extract the JSON object from it and assert on the structured fields.
 			const payload = extractDiffMismatchPayload(errorMessage);
 			expect(payload.code).toBe("diff_mismatch");
-			expect(payload.reason).toBe("content_mismatch");
-			expect(payload.chunkId).toBe("fake-chunk");
-			expect(payload.file).toBe("src/x.ts");
-			expect(payload.side).toBe("head");
-			expect(payload.line).toBe(1);
-			expect(payload.expected).toBe("real");
-			expect(payload.actual).toBe("fake");
-
-			// Nothing landed on the DO — the chunk was rejected before the SQL insert.
+			expect(payload.reason).toBe("file_unknown");
+			expect(payload.chunkId).toBe("ghost-chunk");
+			expect(payload.file).toBe("src/never-indexed.ts");
 			const snapshot = await fetchReview(server.baseUrl, created.reviewId);
 			expect(snapshot.chunks).toEqual([]);
 		} finally {
@@ -535,16 +514,14 @@ describe("Worker MCP review tools (Code Mode)", () => {
 		}
 	});
 
-	it("truncates oversize expected/actual strings in the structured error payload", async () => {
-		// 4000 chars is the schema cap on a DiffLine.content; the error envelope truncates to
-		// 400 + ellipsis so a single mismatched line can't blow up the response payload.
-		const longLine = "x".repeat(2000);
+	it("returns reason: 'range_outside_diff' with baseRange/headRange when the agent's range misses every hunk", async () => {
 		const unifiedDiff = [
-			"diff --git a/src/big.ts b/src/big.ts",
-			"--- a/src/big.ts",
-			"+++ b/src/big.ts",
-			"@@ -0,0 +1,1 @@",
-			`+${longLine}`,
+			"diff --git a/src/x.ts b/src/x.ts",
+			"--- a/src/x.ts",
+			"+++ b/src/x.ts",
+			"@@ -1,1 +1,1 @@",
+			"-old",
+			"+new",
 			"",
 		].join("\n");
 		const created = await createReview(server.baseUrl, 1, unifiedDiff);
@@ -557,45 +534,75 @@ describe("Worker MCP review tools (Code Mode)", () => {
 						id: "g",
 						title: "G",
 						theme: "t",
-						narrative: "Long-line change.",
+						narrative: "n",
 					})});
 					return "ok";
 				}`,
 			);
-			const submittedActual = "y".repeat(2000);
 			const errorMessage = await expectCodeError(
 				client,
 				`async () => {
 					await codemode.add_chunk(${json({
-						id: "long-fake",
+						id: "off-range",
 						groupId: "g",
-						file: { headPath: "src/big.ts", basePath: null },
-						baseRange: { start: 0, end: -1 },
-						headRange: { start: 1, end: 1 },
+						file: { headPath: "src/x.ts", basePath: "src/x.ts" },
+						baseRange: { start: 500, end: 500 },
+						headRange: { start: 500, end: 500 },
 						kind: "change",
-						hunks: [
-							{
-								baseStart: 0,
-								baseLines: 0,
-								headStart: 1,
-								headLines: 1,
-								lines: [{ kind: "add", baseLine: null, headLine: 1, content: submittedActual }],
-							},
-						],
 					})});
 					return "ok";
 				}`,
 			);
 			const payload = extractDiffMismatchPayload(errorMessage);
-			expect(payload.expected).toMatch(/…\(truncated\)$/);
-			expect(payload.actual).toMatch(/…\(truncated\)$/);
-			// Truncated strings stay under the cap-plus-suffix length.
-			expect(payload.expected?.length ?? 0).toBeLessThan(450);
-			expect(payload.actual?.length ?? 0).toBeLessThan(450);
+			expect(payload.code).toBe("diff_mismatch");
+			expect(payload.reason).toBe("range_outside_diff");
+			expect(payload.chunkId).toBe("off-range");
+			expect(payload.file).toBe("src/x.ts");
+			expect(payload.baseRange).toEqual({ start: 500, end: 500 });
+			expect(payload.headRange).toEqual({ start: 500, end: 500 });
+			const snapshot = await fetchReview(server.baseUrl, created.reviewId);
+			expect(snapshot.chunks).toEqual([]);
 		} finally {
 			await client.close();
 		}
 	});
+
+	it("rejects add_chunk with kind: 'context' at Zod parse (only `change` is authorable)", async () => {
+		const created = await createReview(server.baseUrl, 1, sampleDiff());
+		const client = await connectMcp(created.mcpUrl, created.jwt);
+		try {
+			await callCode(
+				client,
+				`async () => {
+					await codemode.define_group(${json({
+						id: "auth-refactor",
+						title: "Auth refactor",
+						theme: "auth",
+						narrative: "n",
+					})});
+					return "ok";
+				}`,
+			);
+			const errorMessage = await expectCodeError(
+				client,
+				`async () => {
+					await codemode.add_chunk(${json(sampleChunk({ kind: "context" }))});
+					return "ok";
+				}`,
+			);
+			// Zod parse rejection — not the diff_mismatch envelope.
+			expect(errorMessage).not.toContain('"code":"diff_mismatch"');
+		} finally {
+			await client.close();
+		}
+	});
+
+	// Note: schema-level rejection of the legacy `hunks` field is covered in
+	// `packages/schema/test/index.test.ts` ("ChunkInput is strict — extra hunks field fails
+	// parse loudly"). At the MCP boundary, the SDK validates against the registered
+	// `inputSchema` (which doesn't list `hunks`) and silently drops unknown keys before our
+	// handler runs, so a regression on `.strict()` won't surface here. The schema test is the
+	// canonical pin.
 
 	it("does not widen the structured-error envelope to non-fidelity failures", async () => {
 		// Pin the scope: a terminal-state guard, FK violation, etc. keeps its existing
@@ -753,6 +760,11 @@ async function waitForEvent(
 	}
 }
 
+/**
+ * `ChunkInput` shape under materialization — ranges only, no `hunks[]`. The host fills in the
+ * hunks at write time from the indexed unified diff (`sampleDiff()`). The schema is `.strict()`,
+ * so any test that supplies stray keys (e.g. legacy `hunks`) fails at Zod parse loudly.
+ */
 function sampleChunk(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		id: "verifier-fn",
@@ -761,38 +773,15 @@ function sampleChunk(overrides: Record<string, unknown> = {}): Record<string, un
 		baseRange: { start: 10, end: 12 },
 		headRange: { start: 10, end: 13 },
 		kind: "change",
-		hunks: [
-			{
-				header: "@@ -10,3 +10,4 @@",
-				baseStart: 10,
-				baseLines: 3,
-				headStart: 10,
-				headLines: 4,
-				lines: [
-					{ kind: "context", baseLine: 10, headLine: 10, content: "export function verify() {" },
-					{ kind: "delete", baseLine: 11, headLine: null, content: "  return jwtVerify(token);" },
-					{
-						kind: "add",
-						baseLine: null,
-						headLine: 11,
-						content: "  return jwtVerify(token, { algorithms: ['HS256'] });",
-					},
-					{ kind: "context", baseLine: 12, headLine: 12, content: "}" },
-					{ kind: "add", baseLine: null, headLine: 13, content: "" },
-				],
-			},
-		],
 		caption: "Pin algorithm verifier",
 		...overrides,
 	};
 }
 
 /**
- * Unified diff that exactly matches `sampleChunk()`'s line content. Tests pass this into
- * `createReview` so the Worker's fidelity validator (U4) sees a real index against which the
- * chunks register cleanly. Without it, `createReview` defaults to an empty diff and the
- * validator skips — fine for tests that don't submit chunks, but a missed end-to-end signal
- * for the ones that do.
+ * Unified diff that materializes into the same chunk content the legacy `sampleChunk().hunks`
+ * encoded by hand. Tests pass this into `createReview` so the Worker's `materializeChunk`
+ * resolves the indexed file and produces hunks for ranges that overlap.
  */
 function sampleDiff(): string {
 	return [
@@ -824,20 +813,51 @@ function json(value: unknown): string {
  * codemode wrapper may surround the upstream tool's text with its own framing (e.g. a snippet
  * stack trace), so we scan for the `{...}` object containing `"code":"diff_mismatch"` rather
  * than parsing the whole message as JSON.
+ *
+ * Reason-specific fields (`baseRange`, `headRange`, `hunkCount`) are optional; tests that need
+ * them assert `toEqual` against the expected shape per reason code.
  */
 function extractDiffMismatchPayload(errorMessage: string): {
 	code: string;
 	reason: string;
 	chunkId: string;
 	file: string;
-	side: string | null;
-	line: number | null;
-	expected: string | null;
-	actual: string | null;
+	baseRange?: { start: number; end: number };
+	headRange?: { start: number; end: number };
+	hunkCount?: number;
 } {
-	const match = errorMessage.match(/\{[^{]*"code"\s*:\s*"diff_mismatch"[\s\S]*?\}/);
-	if (!match) {
-		throw new Error(`structured diff_mismatch payload not found in error message: ${errorMessage}`);
+	// The payload may contain nested objects (`baseRange`, `headRange`), so we can't use a
+	// simple non-greedy regex. Locate the start of the JSON object containing
+	// `"code":"diff_mismatch"`, then scan forward counting brace depth to find the matching
+	// close brace.
+	const codeIdx = errorMessage.indexOf('"code":"diff_mismatch"');
+	if (codeIdx === -1) {
+		throw new Error(
+			`structured diff_mismatch payload not found in error message: ${errorMessage}`,
+		);
 	}
-	return JSON.parse(match[0]);
+	// Walk backward from the code-key index to the opening `{` that starts this object.
+	let start = codeIdx;
+	while (start >= 0 && errorMessage[start] !== "{") start -= 1;
+	if (start < 0) {
+		throw new Error(`could not locate object start for diff_mismatch payload: ${errorMessage}`);
+	}
+	// Walk forward, balancing braces, to find the matching close.
+	let depth = 0;
+	let end = -1;
+	for (let i = start; i < errorMessage.length; i += 1) {
+		const ch = errorMessage[i];
+		if (ch === "{") depth += 1;
+		else if (ch === "}") {
+			depth -= 1;
+			if (depth === 0) {
+				end = i;
+				break;
+			}
+		}
+	}
+	if (end === -1) {
+		throw new Error(`could not locate object end for diff_mismatch payload: ${errorMessage}`);
+	}
+	return JSON.parse(errorMessage.slice(start, end + 1));
 }
