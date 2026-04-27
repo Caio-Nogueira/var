@@ -22,9 +22,9 @@ import { codeMcpServer } from "@cloudflare/codemode/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
-	AddChunkInput,
 	AddFindingInput,
 	AddInlineCommentInput,
+	ChunkInput,
 	DefineGroupInput,
 	FinalizeReviewInput,
 	SetNarrativeInput,
@@ -36,10 +36,10 @@ const SERVER_NAME = "review-agent";
 const SERVER_VERSION = "0.0.1";
 
 /**
- * Cap on `expected`/`actual` strings inside the structured-error payload. Diff line content can
- * be up to 4000 chars (per the schema's `DiffLine.content.max(4000)` cap); 400 is enough to
- * convey the mismatch shape without letting a single error explode the response. Truncated
- * values are suffixed with `…(truncated)` so the agent isn't surprised by a clipped string.
+ * Defensive cap on the `file` path inside the structured-error payload. The materialization
+ * payload is otherwise small structured fields (`baseRange`, `headRange`, `hunkCount`); the only
+ * field that could plausibly be unbounded is the file path. Truncated values are suffixed with
+ * `…(truncated)` so the agent isn't surprised by a clipped string.
  */
 const ERROR_FIELD_MAX_CHARS = 400;
 
@@ -55,25 +55,21 @@ function ok(message: string, data: Record<string, unknown> = {}) {
 
 /**
  * Encode a `DiffMismatchError` as the MCP tool-result error envelope: `isError: true` plus a
- * single text content block whose body is the JSON-serialized payload. The payload's field
- * names are part of the contract — see the prompt addition in U7 and the `DiffMismatchError`
- * schema for `toPayload()`.
+ * single text content block whose body is the JSON-serialized payload. The payload carries the
+ * `reason` enum (`"file_unknown" | "range_outside_diff" | "binary_file" | "too_many_hunks"`)
+ * plus optional structured fields (`baseRange`, `headRange`, `hunkCount`). Those are small
+ * structured values; only `file` gets a defensive truncation cap.
  */
 function diffMismatchResult(error: DiffMismatchError) {
 	const payload = error.toPayload();
-	const body = {
-		...payload,
-		expected: truncate(payload.expected),
-		actual: truncate(payload.actual),
-	};
+	const body = { ...payload, file: truncate(payload.file) };
 	return {
 		isError: true as const,
 		content: [{ type: "text" as const, text: JSON.stringify(body) }],
 	};
 }
 
-function truncate(value: string | null): string | null {
-	if (value === null) return null;
+function truncate(value: string): string {
 	if (value.length <= ERROR_FIELD_MAX_CHARS) return value;
 	return `${value.slice(0, ERROR_FIELD_MAX_CHARS)}…(truncated)`;
 }
@@ -120,28 +116,21 @@ function buildServer(agent: ReviewAgent): McpServer {
 		"add_chunk",
 		{
 			description:
-				"Record one hunk from the diff against a group. Every hunk in `git diff base..head` " +
-				"must end up in some group's chunks before `finalize_review` — do not skip files even " +
-				"if they look mechanical. Each hunk line must include kind, raw content without +/- " +
-				"prefix, and base/head line anchors. " +
-				"For additions use basePath:null, an empty baseRange, and add lines with baseLine:null. " +
-				"For deletions use headPath:null, an empty headRange, and delete lines with headLine:null. " +
-				"For renames set both paths. Redact secret-like line content but keep line anchors.",
-			inputSchema: AddChunkInput.shape,
+				"Record one chunk from the diff against a group. Identify the chunk by its " +
+				"`(file, baseRange, headRange)` — the host materializes the actual diff content " +
+				"from its own copy of the unified diff. Every hunk in `git diff base..head` should " +
+				"end up in some group's chunks before `finalize_review`; do not skip files even if " +
+				"they look mechanical. " +
+				"For pure additions use basePath:null with an empty baseRange ({ start: 0, end: -1 }); " +
+				"for pure deletions use headPath:null with an empty headRange. For renames set both " +
+				"paths. The host returns the materialized hunks in the success response — read them " +
+				"to anchor `add_inline_comment` calls.",
+			inputSchema: ChunkInput.shape,
 		},
 		async (raw) => {
-			const input = AddChunkInput.parse(raw);
+			const input = ChunkInput.parse(raw);
 			try {
-				const chunk = agent.addChunk({
-					id: input.id,
-					groupId: input.groupId,
-					file: input.file,
-					baseRange: input.baseRange,
-					headRange: input.headRange,
-					kind: input.kind,
-					hunks: input.hunks,
-					...(input.caption !== undefined ? { caption: input.caption } : {}),
-				});
+				const chunk = agent.addChunk(input);
 				return ok(`chunk ${chunk.id} added to ${chunk.groupId}`, {
 					chunkId: chunk.id,
 					groupId: chunk.groupId,
@@ -149,11 +138,11 @@ function buildServer(agent: ReviewAgent): McpServer {
 					lines: chunk.hunks.reduce((count, hunk) => count + hunk.lines.length, 0),
 				});
 			} catch (err) {
-				// Diff-fidelity rejections get a structured JSON envelope (parseable by the
+				// Materialization rejections get a structured JSON envelope (parseable by the
 				// agent's retry path) instead of a free-form error string. Other errors —
 				// FK violations, terminal-state guards, schema parse errors — keep their
 				// existing string-message shape; we deliberately don't widen the structural
-				// surface beyond fidelity validation in this plan.
+				// surface beyond materialization rejection.
 				if (err instanceof DiffMismatchError) return diffMismatchResult(err);
 				throw err;
 			}
