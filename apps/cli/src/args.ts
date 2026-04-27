@@ -26,7 +26,10 @@ export const DEFAULT_HEAD_REF = "HEAD";
 export const DEFAULT_WORKER_URL = "http://localhost:8787";
 export const DEFAULT_OPENCODE_BIN = "opencode";
 export const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+export const DEFAULT_TIMEOUT_MINUTES = DEFAULT_TIMEOUT_MS / 60_000;
 export const DEFAULT_FETCH = true;
+/** Cap minutes input to keep the JS Number safe and surface absurd values early. */
+const MAX_TIMEOUT_MINUTES = 24 * 60;
 
 type Env = Record<string, string | undefined>;
 
@@ -42,6 +45,9 @@ export function parseArgs(argv: string[], env: Env = {}): ParseResult {
 	};
 	let baseExplicitlySet = false;
 	let headExplicitlySet = false;
+	// Track which timeout flag the user passed so we can reject the conflict explicitly instead
+	// of silently letting "last flag wins" pick a value the user didn't expect.
+	let timeoutFlag: "--timeout-ms" | "--timeout-minutes" | null = null;
 
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
@@ -71,7 +77,19 @@ export function parseArgs(argv: string[], env: Env = {}): ParseResult {
 				index += 1;
 				break;
 			case "--timeout-ms":
+				if (timeoutFlag !== null && timeoutFlag !== arg) {
+					throw new UsageError(`${arg} cannot be combined with ${timeoutFlag}`);
+				}
 				options.timeoutMs = parseTimeout(requireValue(arg, value), arg);
+				timeoutFlag = arg;
+				index += 1;
+				break;
+			case "--timeout-minutes":
+				if (timeoutFlag !== null && timeoutFlag !== arg) {
+					throw new UsageError(`${arg} cannot be combined with ${timeoutFlag}`);
+				}
+				options.timeoutMs = parseTimeoutMinutes(requireValue(arg, value), arg);
+				timeoutFlag = arg;
 				index += 1;
 				break;
 			case "--no-fetch":
@@ -107,7 +125,8 @@ export function parseArgs(argv: string[], env: Env = {}): ParseResult {
 export function usage(): string {
 	return [
 		"Usage: review [--base <ref>] [--head <ref> | --working-tree] [--worker-url <url>]",
-		"              [--opencode-bin <path>] [--timeout-ms <ms>] [--no-fetch]",
+		"              [--opencode-bin <path>] [--timeout-minutes <n> | --timeout-ms <ms>]",
+		"              [--no-fetch]",
 		"",
 		"Runs a Worker-backed OpenCode review from the current git repository.",
 		"",
@@ -119,11 +138,16 @@ export function usage(): string {
 		`respecting .gitignore). It cannot be combined with --head, and the default base flips`,
 		`to ${DEFAULT_WORKING_TREE_BASE_REF} unless you pass --base explicitly.`,
 		"",
+		"--timeout-minutes is the human-friendly knob for big PRs that need >10 min of agent",
+		"time. It cannot be combined with --timeout-ms (which expresses the same budget in",
+		"milliseconds and is preserved for tests). REVIEW_AGENT_TIMEOUT_MS still works.",
+		"",
 		"Defaults:",
 		`  --base ${DEFAULT_BASE_REF}  (or ${DEFAULT_WORKING_TREE_BASE_REF} with --working-tree)`,
 		`  --head ${DEFAULT_HEAD_REF}`,
 		`  --worker-url ${DEFAULT_WORKER_URL}`,
 		`  --opencode-bin ${DEFAULT_OPENCODE_BIN}`,
+		`  --timeout-minutes ${DEFAULT_TIMEOUT_MINUTES}`,
 		`  --fetch ${DEFAULT_FETCH ? "(on)" : "(off)"}`,
 	].join("\n");
 }
@@ -144,6 +168,20 @@ function parseTimeout(value: string | undefined, label: string): number {
 	if (!Number.isInteger(parsed) || parsed <= 0)
 		throw new UsageError(`${label} must be a positive integer`);
 	return parsed;
+}
+
+/**
+ * Accepts a positive number of minutes (integer or fractional), rejects non-finite/non-positive
+ * input, caps absurd values, and converts to ms. Fractional minutes round to the nearest ms so
+ * `--timeout-minutes 0.5` works as expected for tests/short-circuit cases.
+ */
+function parseTimeoutMinutes(value: string, label: string): number {
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed) || parsed <= 0)
+		throw new UsageError(`${label} must be a positive number of minutes`);
+	if (parsed > MAX_TIMEOUT_MINUTES)
+		throw new UsageError(`${label} must be ≤ ${MAX_TIMEOUT_MINUTES}`);
+	return Math.round(parsed * 60_000);
 }
 
 function parseFetchEnv(raw: string | undefined): boolean {

@@ -106,4 +106,34 @@ describe("parseArgs", () => {
 		expect(() => parseArgs(["--base"])).toThrow("missing value");
 		expect(() => parseArgs(["--timeout-ms", "0"])).toThrow("positive integer");
 	});
+
+	it("--timeout-minutes converts to milliseconds", () => {
+		const result = parseArgs(["--timeout-minutes", "20"]);
+		expect(result.kind).toBe("run");
+		if (result.kind !== "run") return;
+		expect(result.options.timeoutMs).toBe(20 * 60 * 1000);
+	});
+
+	it("--timeout-minutes accepts fractional minutes", () => {
+		const result = parseArgs(["--timeout-minutes", "1.5"]);
+		expect(result.kind).toBe("run");
+		if (result.kind !== "run") return;
+		expect(result.options.timeoutMs).toBe(90_000);
+	});
+
+	it("--timeout-minutes rejects non-positive, non-numeric, and out-of-range values", () => {
+		expect(() => parseArgs(["--timeout-minutes", "0"])).toThrow("positive number of minutes");
+		expect(() => parseArgs(["--timeout-minutes", "-5"])).toThrow("positive number of minutes");
+		expect(() => parseArgs(["--timeout-minutes", "abc"])).toThrow("positive number of minutes");
+		expect(() => parseArgs(["--timeout-minutes", "9999"])).toThrow("must be ≤");
+	});
+
+	it("rejects --timeout-minutes combined with --timeout-ms", () => {
+		expect(() => parseArgs(["--timeout-minutes", "5", "--timeout-ms", "1000"])).toThrow(
+			/cannot be combined with --timeout-minutes/,
+		);
+		expect(() => parseArgs(["--timeout-ms", "1000", "--timeout-minutes", "5"])).toThrow(
+			/cannot be combined with --timeout-ms/,
+		);
+	});
 });
