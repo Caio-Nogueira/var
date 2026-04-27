@@ -137,20 +137,55 @@ export const DiffHunk = z.object({
 });
 export type DiffHunk = z.infer<typeof DiffHunk>;
 
-export const Chunk = z.object({
-	id: Slug,
-	groupId: Slug,
-	file: FileRef,
-	/** Range on the base revision. Empty range means "no base side" (pure addition). */
-	baseRange: LineRange,
-	/** Range on the head revision. Empty range means "no head side" (pure deletion). */
-	headRange: LineRange,
-	kind: ChunkKind,
-	/** Structured diff payload persisted for the review UI. */
-	hunks: z.array(DiffHunk).min(1).max(50),
-	/** Optional one-line caption shown above the diff in the UI. */
-	caption: z.string().max(280).optional(),
-});
+/**
+ * Agent-facing chunk input. The agent submits ranges and curatorial intent only — the Worker
+ * materializes `hunks[].lines[].content` from its own indexed copy of the unified diff at write
+ * time. There is no `hunks` field here on purpose: under the materialization contract the agent
+ * has no business authoring diff bytes the host already has on file.
+ *
+ * `kind` narrows to `"change"` only on input. Pure-`"context"` chunks were authorable under the
+ * old transcription contract because the agent could type out unchanged code adjacent to a hunk;
+ * under materialization there are no indexed bytes to materialize for code outside any hunk's
+ * diff-context window, so `"context"` is no longer a legal author shape. The persisted `Chunk`
+ * schema retains the wider enum for back-compat with already-persisted snapshots.
+ *
+ * `.strict()` means extra keys (e.g. an agent that still emits `hunks`) fail Zod parse loudly
+ * rather than being silently stripped — the right behavior given there are no shipped agents and
+ * the input contract is changing.
+ */
+export const ChunkInput = z
+	.object({
+		id: Slug,
+		groupId: Slug,
+		file: FileRef,
+		/** Range on the base revision. Empty range means "no base side" (pure addition). */
+		baseRange: LineRange,
+		/** Range on the head revision. Empty range means "no head side" (pure deletion). */
+		headRange: LineRange,
+		/** Only `"change"` is authorable; `"context"` exists on the persisted shape for back-compat. */
+		kind: z.literal("change"),
+		/** Optional one-line caption shown above the diff in the UI. */
+		caption: z.string().max(280).optional(),
+	})
+	.strict();
+export type ChunkInput = z.infer<typeof ChunkInput>;
+
+/**
+ * Persisted/projection shape. Composes from `ChunkInput` and adds the materialized `hunks[]`
+ * the Worker fills in at write time. The `kind` enum widens back to `ChunkKind` (`"change"` |
+ * `"context"`) so already-persisted snapshots carrying `"context"` still round-trip.
+ *
+ * `.strip()` (Zod default) is restored here so that downstream readers — DO `meta` row
+ * deserialization, SPA snapshot parsing — silently drop any unknown keys rather than throwing.
+ * Strict-mode is reserved for the agent-input contract where loud failure is desirable.
+ */
+export const Chunk = ChunkInput.omit({ kind: true })
+	.extend({
+		kind: ChunkKind,
+		/** Structured diff payload materialized by the Worker; the UI rendering payload. */
+		hunks: z.array(DiffHunk).min(1).max(50),
+	})
+	.strip();
 export type Chunk = z.infer<typeof Chunk>;
 
 /**
@@ -257,8 +292,10 @@ export const Review = z.object({
 	error: z.string().optional(),
 	/**
 	 * Full unified-diff text for `base..head` captured by the CLI at review-creation time. The
-	 * DO uses this as the source-of-truth for `add_chunk` content fidelity validation. Optional
-	 * so older reviews persisted before the validator landed still parse.
+	 * DO uses this as the source-of-truth for materializing `add_chunk` `hunks[].lines[].content`
+	 * at write time — the agent submits ranges only, the Worker materializes the diff lines from
+	 * its indexed copy of this text. Optional on the snapshot so older persisted reviews and the
+	 * deliberate-omission projection (see below) both round-trip.
 	 *
 	 * The DO snapshot returned by `GET /reviews/:id` does NOT include this field — it lives in
 	 * the DO's internal `meta` row only. The optionality here is purely so persisted state can
@@ -291,17 +328,13 @@ export const DefineGroupInput = z.object({
 });
 export type DefineGroupInput = z.infer<typeof DefineGroupInput>;
 
-export const AddChunkInput = z.object({
-	id: Slug,
-	groupId: Slug,
-	file: FileRef,
-	baseRange: LineRange,
-	headRange: LineRange,
-	kind: ChunkKind,
-	hunks: z.array(DiffHunk).min(1).max(50),
-	caption: z.string().max(280).optional(),
-});
-export type AddChunkInput = z.infer<typeof AddChunkInput>;
+/**
+ * Back-compat alias for `ChunkInput`. The MCP layer and worker still import `AddChunkInput`;
+ * this alias lets U1 land the schema split without forcing a same-PR rename across every
+ * callsite. U4 will switch the canonical import to `ChunkInput` and this alias can go away.
+ */
+export const AddChunkInput = ChunkInput;
+export type AddChunkInput = ChunkInput;
 
 export const AddFindingInput = z.object({
 	id: Slug,
@@ -351,10 +384,12 @@ export const CreateReviewBody = z.object({
 	totalFiles: z.number().int().min(0),
 	/**
 	 * Full unified-diff text for `base..head`, captured by the CLI via `git diff`. The Worker
-	 * parses this once at review init, builds a per-file index, and validates every `add_chunk`
-	 * call's line content against it — so the agent cannot replace real diff lines with a
-	 * synthetic gloss like `// + 20-line cron block: addRaw…`. Empty string is legal (a review
-	 * against identical SHAs has no diff).
+	 * parses this once at review init, builds a per-file index of ordered hunks, and uses it as
+	 * the source-of-truth when materializing `add_chunk` content at write time — the agent
+	 * submits ranges only, the Worker fills in `hunks[].lines[].content` from this indexed copy.
+	 * Required: without the diff there is nothing to materialize against, so a review cannot be
+	 * created without it. Empty string is legal (a review against identical SHAs has no diff —
+	 * `add_chunk` would necessarily be a no-op).
 	 *
 	 * Capped at `MAX_UNIFIED_DIFF_BYTES`; the CLI errors before posting if the diff exceeds the
 	 * cap, the Worker rejects again here as defense in depth.

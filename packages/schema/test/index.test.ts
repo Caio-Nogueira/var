@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
 	AddChunkInput,
 	AddFindingInput,
+	Chunk,
+	ChunkInput,
 	CreateReviewBody,
 	DefineGroupInput,
 	MAX_UNIFIED_DIFF_BYTES,
@@ -126,7 +128,71 @@ describe("schema smoke", () => {
 		).toThrow();
 	});
 
-	it("AddChunkInput allows pure-addition (empty base range)", () => {
+	it("ChunkInput accepts a pure-addition (empty base range) without hunks", () => {
+		// Under the materialization contract the agent submits ranges only — `hunks[]` is filled
+		// in by the Worker at write time. The legal author shape has no `hunks` field at all.
+		const parsed = ChunkInput.parse({
+			id: "new-helper",
+			groupId: "auth-refactor",
+			file: { headPath: "src/auth.ts", basePath: null },
+			baseRange: { start: 0, end: -1 },
+			headRange: { start: 10, end: 30 },
+			kind: "change",
+		});
+		expect(parsed.file.basePath).toBeNull();
+		expect("hunks" in parsed).toBe(false);
+	});
+
+	it("ChunkInput rejects kind: \"context\" (not authorable under materialization)", () => {
+		// Pure-context chunks were authorable under the old transcription contract; under
+		// materialization there are no indexed bytes to materialize for code outside any hunk's
+		// diff-context window, so `"context"` is no longer a legal author shape. The persisted
+		// `Chunk` schema retains the wider enum for back-compat.
+		expect(() =>
+			ChunkInput.parse({
+				id: "context-only",
+				groupId: "auth-refactor",
+				file: { headPath: "src/auth.ts", basePath: "src/auth.ts" },
+				baseRange: { start: 10, end: 12 },
+				headRange: { start: 10, end: 12 },
+				kind: "context",
+			}),
+		).toThrow();
+	});
+
+	it("ChunkInput is strict — extra hunks field fails parse loudly", () => {
+		// `.strict()` on `ChunkInput` means an agent that still emits `hunks` (carryover from the
+		// old transcription contract) gets a loud Zod parse error rather than having the field
+		// silently stripped. Deliberate — the input contract is changing and there are no
+		// shipped agents to be gentle with.
+		expect(() =>
+			ChunkInput.parse({
+				id: "still-emitting-hunks",
+				groupId: "auth-refactor",
+				file: { headPath: "src/auth.ts", basePath: null },
+				baseRange: { start: 0, end: -1 },
+				headRange: { start: 10, end: 11 },
+				kind: "change",
+				hunks: [
+					{
+						baseStart: 0,
+						baseLines: 0,
+						headStart: 10,
+						headLines: 2,
+						lines: [
+							{ kind: "add", baseLine: null, headLine: 10, content: "x" },
+							{ kind: "add", baseLine: null, headLine: 11, content: "y" },
+						],
+					},
+				],
+			}),
+		).toThrow();
+	});
+
+	it("AddChunkInput is an alias for ChunkInput (back-compat for callsites U4 will rename)", () => {
+		// The MCP layer still imports `AddChunkInput`. The alias lets U1 land the schema split
+		// without forcing a same-PR rename across every callsite.
+		expect(AddChunkInput).toBe(ChunkInput);
 		const parsed = AddChunkInput.parse({
 			id: "new-helper",
 			groupId: "auth-refactor",
@@ -134,26 +200,16 @@ describe("schema smoke", () => {
 			baseRange: { start: 0, end: -1 },
 			headRange: { start: 10, end: 30 },
 			kind: "change",
-			hunks: [
-				{
-					header: "@@ -0,0 +10,2 @@",
-					baseStart: 0,
-					baseLines: 0,
-					headStart: 10,
-					headLines: 2,
-					lines: [
-						{ kind: "add", baseLine: null, headLine: 10, content: "export function auth() {" },
-						{ kind: "add", baseLine: null, headLine: 11, content: "}" },
-					],
-				},
-			],
 		});
-		expect(parsed.file.basePath).toBeNull();
+		expect(parsed.id).toBe("new-helper");
 	});
 
-	it("AddChunkInput requires structured hunk lines for UI rendering", () => {
+	it("Chunk (persisted shape) requires structured hunk lines for UI rendering", () => {
+		// Moved from the previous AddChunkInput test — under materialization, `hunks[]` lives on
+		// the persisted shape (filled in by the Worker), not on the agent input. The min(1)
+		// constraint stays so the SPA never has to render an empty chunk.
 		expect(() =>
-			AddChunkInput.parse({
+			Chunk.parse({
 				id: "new-helper",
 				groupId: "auth-refactor",
 				file: { headPath: "src/auth.ts", basePath: null },
@@ -165,9 +221,13 @@ describe("schema smoke", () => {
 		).toThrow();
 	});
 
-	it("DiffLine encodes side-specific line anchors", () => {
+	it("Chunk DiffLine encodes side-specific line anchors", () => {
+		// Moved from the previous AddChunkInput test — the DiffLine discriminator-rejecting
+		// behavior now lives on the persisted shape. An "add" line must have a null `baseLine`;
+		// supplying a number for `baseLine` on an add line picks no branch of the discriminated
+		// union and fails parse.
 		expect(() =>
-			AddChunkInput.parse({
+			Chunk.parse({
 				id: "bad-line",
 				groupId: "auth-refactor",
 				file: { headPath: "src/auth.ts", basePath: "src/auth.ts" },
@@ -185,6 +245,35 @@ describe("schema smoke", () => {
 				],
 			}),
 		).toThrow();
+	});
+
+	it("Chunk accepts kind: \"context\" for back-compat with already-persisted snapshots", () => {
+		// `ChunkInput.kind` narrows to `"change"` only, but the persisted `Chunk` schema retains
+		// the wider `ChunkKind` enum so older snapshots whose chunks carry `kind: "context"`
+		// still round-trip cleanly through `Review.parse(...)`.
+		const parsed = Chunk.parse({
+			id: "legacy-context",
+			groupId: "auth-refactor",
+			file: { headPath: "src/auth.ts", basePath: "src/auth.ts" },
+			baseRange: { start: 5, end: 7 },
+			headRange: { start: 5, end: 7 },
+			kind: "context",
+			hunks: [
+				{
+					baseStart: 5,
+					baseLines: 3,
+					headStart: 5,
+					headLines: 3,
+					lines: [
+						{ kind: "context", baseLine: 5, headLine: 5, content: "a" },
+						{ kind: "context", baseLine: 6, headLine: 6, content: "b" },
+						{ kind: "context", baseLine: 7, headLine: 7, content: "c" },
+					],
+				},
+			],
+		});
+		expect(parsed.kind).toBe("context");
+		expect(parsed.hunks[0]!.lines).toHaveLength(3);
 	});
 
 	it("Review parses a minimal pending review", () => {
