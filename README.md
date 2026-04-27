@@ -65,6 +65,9 @@ Two principles thread through the prompt:
   them as opinion.
 - **Brevity everywhere.** Group narratives 1-2 sentences. Findings aim for one sentence (the
   schema caps `Finding.body` at 1500 chars). Review summary 1-2 sentences.
+- **Verbatim chunk content.** The CLI ships the full unified diff with each review and the
+  Worker validates every `add_chunk` line against it; agents that paraphrase or summarize hunks
+  get a structured `diff_mismatch` rejection instead of writing fiction into the snapshot.
 
 While the review is in flight, the SPA shows a progress counter (`X of Y files processed · N
 groups · M findings`) instead of half-written content. The full structural view appears once

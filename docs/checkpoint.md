@@ -43,6 +43,14 @@ local                                       Cloudflare
   dispatches to the host via Workers RPC and lands in the same DO mutators as before. Rationale:
   ergonomic chaining via TS snippets beats many discrete tool calls; token savings are a side
   effect. `@cloudflare/codemode` is beta and pinned exactly.
+- **Server-side diff fidelity validation:** DONE. See
+  `docs/plans/2026-04-27-002-feat-server-side-diff-fidelity-validation-plan.md`. The CLI now
+  ships the full `git diff base..head` text with each review (capped at
+  `MAX_UNIFIED_DIFF_BYTES = 10 MiB`, override via `--max-diff-bytes`); the Worker parses and
+  indexes it once at init and rejects any `add_chunk` whose `hunks[].lines[].content` disagrees
+  with the actual diff. Rejections surface as a structured `diff_mismatch` JSON envelope so the
+  agent can self-correct on retry. Closes the loophole where the agent could replace real diff
+  lines with synthetic glosses like `// + 20-line cron block: addRaw…`.
 
 `apps/worker/scripts/smoke.ts` exercises the full flow against `wrangler dev` (already passing).
 
