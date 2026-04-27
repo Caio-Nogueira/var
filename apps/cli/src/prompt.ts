@@ -107,7 +107,7 @@ PHASE 3 — RECORD EACH GROUP
 The only review-recording tool you have is \`code\`. It takes a single TypeScript async arrow function (as a string) and runs it in an isolated sandbox. Inside the function you have a \`codemode\` namespace with one typed method per review operation:
 
   codemode.define_group({ id, title, theme, narrative })
-  codemode.add_chunk({ id, groupId, file, baseRange, headRange, kind, hunks, caption? })
+  codemode.add_chunk({ id, groupId, file, baseRange, headRange, kind, caption? })
   codemode.add_finding({ id, groupId, severity, title, body, refs? })
   codemode.add_inline_comment({ id, chunkId, line, side, body, severity })
   codemode.set_narrative({ summary })
@@ -122,9 +122,16 @@ For each group, in your planned order:
 
   2. \`codemode.add_chunk(...)\` for each hunk in this group, in the order the human should read them. Include ALL hunks. The diff is incomplete until every hunk is recorded.
 
-     DIFF FIDELITY — \`hunks[].lines[].content\` must be copied VERBATIM from \`git diff\` output, character-for-character. NEVER summarize, paraphrase, abbreviate, truncate, or replace lines with a description like \`// + 20-line cron block: addRaw…\`. The reader is reviewing the actual code, not your gloss of it. Every added/deleted line in the diff is a separate \`{ kind: "add" | "delete", content: "..." }\` entry. Every adjacent unchanged line you include is \`{ kind: "context", content: "..." }\` with the same \`content\` you saw in the diff (no \`+\`/\`-\`/\` \` prefix). Per the schema each hunk holds up to 500 lines and each line up to 4000 chars — that is more than enough for any real hunk. If a single hunk truly exceeds 500 lines, split it into multiple sequential \`add_chunk\` calls covering the same region; do NOT collapse content. Captions are the only place to summarize: a one-line agent-authored description of why the chunk matters. The lines themselves are the diff.
+     Read \`git diff ${options.base.sha}..${options.head.sha}\` thoroughly before proposing chunks. Pick \`baseRange\`/\`headRange\` directly from the line numbers shown in the diff output. The host materializes the actual diff content from the unified diff it has on file — your job is curation (which lines belong together, in what order), not transcription. Captions are the only place to summarize: a one-line agent-authored description of why the chunk matters.
 
-     The host validates each \`add_chunk\` against the actual unified diff. If your line content doesn't match what \`git diff\` produced for that file at that line, the call returns a structured error: \`{ "code": "diff_mismatch", "reason": "content_mismatch" | "line_not_in_diff" | "file_unknown", "chunkId", "file", "side", "line", "expected", "actual" }\`. Read the \`expected\` field — that's the verbatim line you should have submitted. Fix the snippet and call \`code\` again. Don't argue with the validator; it has the diff and you don't.
+     Don't draw two chunks over the same code; if you want two captions on one region, use one chunk and write a richer caption.
+
+     If the host rejects an \`add_chunk\` call, it returns a structured JSON error: \`{ "code": "diff_mismatch", "reason", "file", "baseRange"?, "headRange"?, "hunkCount"? }\`. The four reason codes:
+       - \`file_unknown\`: the file you named is not in the diff. Re-read \`git diff\` and pick a file that is.
+       - \`range_outside_diff\`: your \`baseRange\`/\`headRange\` does not intersect any diff content for that file. Tighten the range to lines that actually appear in \`git diff\`.
+       - \`binary_file\`: you cannot attach hunks to binary changes. Skip the file or call it out in narrative only.
+       - \`too_many_hunks\`: your range covers more than 50 hunks. Submit narrower ranges; one chunk per logical region.
+     Don't argue with the host; it has the diff and you don't.
 
   3. \`codemode.add_finding(...)\` for each actionable observation on this group.
      A finding asks the author to do something specific. If you wouldn't change the PR over it, don't write one.
@@ -134,6 +141,11 @@ For each group, in your planned order:
 
   4. \`codemode.add_inline_comment(...)\` only for wayfinding pins on specific lines. NOT for calls to action — those are findings. Use rarely; most reviews need none.
 
+     \`add_chunk\` returns the assembled chunk including its materialized hunks. Read \`response.chunk.hunks[*].lines[*]\` to see the lines that actually exist in the chunk:
+       - lines with kind \`"context"\` or \`"add"\` carry \`headLine\`
+       - lines with kind \`"context"\` or \`"delete"\` carry \`baseLine\`
+     When you call \`add_inline_comment\`, anchor \`line\` to a value that appears in the chunk's materialized lines for the matching \`side\` (\`"base"\` or \`"head"\`). Don't infer line numbers from the original \`git diff\` — the host may have whole-hunk-expanded or trimmed what you submitted, so \`git diff\`'s line numbers aren't authoritative for anchors. If you get an anchor-not-found error, re-read \`response.chunk.hunks\` and pick a line that exists.
+
 How to invoke:
 
   - Each \`code\` call submits one async arrow function. Example shape (one group's worth):
@@ -141,7 +153,7 @@ How to invoke:
       \`\`\`ts
       async () => {
         await codemode.define_group({ id: "auth-refactor", title: "Auth verifier refactor", theme: "auth", narrative: "Pins JWT algorithm allow-list." });
-        await codemode.add_chunk({ id: "verify-fn", groupId: "auth-refactor", file: { headPath: "src/auth/verify.ts", basePath: "src/auth/verify.ts" }, baseRange: { start: 10, end: 12 }, headRange: { start: 10, end: 13 }, kind: "change", hunks: [/* ... */] });
+        await codemode.add_chunk({ id: "verify-fn", groupId: "auth-refactor", file: { headPath: "src/auth/verify.ts", basePath: "src/auth/verify.ts" }, baseRange: { start: 10, end: 12 }, headRange: { start: 10, end: 13 }, kind: "change" });
         await codemode.add_finding({ id: "pin-alg", groupId: "auth-refactor", severity: "must_fix", title: "Pin JWT algorithm", body: "Pin to HS256 to defeat alg confusion.", refs: [{ kind: "chunk", chunkId: "verify-fn" }] });
         return "ok";
       }

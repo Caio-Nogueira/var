@@ -71,44 +71,64 @@ describe("buildReviewPrompt", () => {
 		expect(prompt).toContain("1500");
 	});
 
-	// The agent has historically tried to "save space" by replacing real diff lines with
-	// summary stubs like `// + 20-line cron block: addRaw…`. The viewer can't expand those
-	// because the underlying chunk doesn't carry the lines. The fidelity contract makes that
-	// behavior an explicit error in the prompt; this test pins the contract so a future edit
-	// can't quietly drop it.
-	it("encodes the diff-fidelity contract (no summarized hunk lines)", () => {
+	// Regression guard: the old DIFF FIDELITY block (and its transcription/verbatim contract)
+	// was removed when the host began materializing chunk content from the unified diff. The
+	// agent no longer authors hunk lines, so any reappearance of "diff fidelity", "verbatim",
+	// or the deleted reason codes ("content_mismatch", "line_not_in_diff", "expected") would
+	// re-introduce stale guidance the host can no longer honor. Pin their absence.
+	it("does not include the deleted DIFF FIDELITY / verbatim / legacy-error phrases", () => {
 		const prompt = buildReviewPrompt(VALID);
 		const lower = prompt.toLowerCase();
-		expect(lower).toContain("diff fidelity");
-		expect(lower).toContain("verbatim");
-		// Both sides of the rule: the prohibition and the schema-headroom argument that
-		// removes "I had to summarize because the schema is too small" as an excuse.
-		expect(lower).toMatch(/never\s+summarize|do\s+not\s+(summari[sz]e|paraphrase)/);
-		expect(prompt).toContain("500");
-		expect(prompt).toContain("4000");
+		expect(lower).not.toContain("diff fidelity");
+		expect(lower).not.toContain("verbatim");
+		expect(prompt).not.toContain("content_mismatch");
+		expect(prompt).not.toContain("line_not_in_diff");
+		// The legacy structured-error envelope had an `expected` field with the verbatim
+		// line; the new envelope does not. Guard against the field name leaking back in.
+		expect(prompt).not.toContain('"expected"');
+		expect(prompt).not.toContain("`expected`");
 	});
 
-	// U7 — the prompt now also teaches the structural-validation failure mode added by U4/U5:
-	// the host validates `add_chunk` against the actual diff and returns a structured
-	// `diff_mismatch` payload on disagreement. The agent must know this is the contract so it
-	// (a) doesn't treat the rejection as a host bug, and (b) parses the JSON error to fix the
-	// offending line. This test pins the contract so a future prompt edit can't drop it.
-	it("teaches the diff_mismatch failure mode and structured retry shape", () => {
+	// The host now MATERIALIZES chunk content from the unified diff and rejects ranges, not
+	// content. The prompt must teach the four current reason codes and a recovery hint so the
+	// agent (a) doesn't treat the rejection as a host bug, and (b) tightens the range it
+	// submits next. This test pins the contract so a future prompt edit can't drop it.
+	it("teaches the diff_mismatch failure mode with the four current reason codes", () => {
 		const prompt = buildReviewPrompt(VALID);
 		// The failure code the host emits, named explicitly so the agent can match on it.
 		expect(prompt).toContain("diff_mismatch");
-		// The three reasons the validator can produce — pinning these covers the whole
-		// validator-domain space the agent might encounter on retry.
-		expect(prompt).toContain("content_mismatch");
-		expect(prompt).toContain("line_not_in_diff");
+		// The four reason codes the host can emit under the new shape.
 		expect(prompt).toContain("file_unknown");
-		// The directive that the host has the authoritative diff and the agent should fix the
-		// snippet rather than retrying the same payload. Phrased loosely so future copy edits
-		// (with the same intent) keep passing.
+		expect(prompt).toContain("range_outside_diff");
+		expect(prompt).toContain("binary_file");
+		expect(prompt).toContain("too_many_hunks");
+		// A recovery hint phrased loosely so copy edits with the same intent keep passing.
 		expect(prompt.toLowerCase()).toMatch(
-			/host validates|validates? .* against .* (actual )?(unified )?diff/,
+			/host has the diff|tighten the range|narrower ranges/,
 		);
-		expect(prompt).toContain("expected");
+	});
+
+	// The agent no longer authors hunk lines, so it must read the unified diff first-hand
+	// and pick `baseRange`/`headRange` directly from the line numbers it sees. This drift
+	// guard keeps the "read git diff" instruction in place; without it the agent can drift
+	// into inventing ranges from memory.
+	it("instructs the agent to read git diff thoroughly before proposing chunks", () => {
+		const prompt = buildReviewPrompt(VALID);
+		const lower = prompt.toLowerCase();
+		expect(lower).toMatch(/read\s+`?git diff[^`]*`?\s+thoroughly/);
+	});
+
+	// Inline comments must anchor to lines that exist in the chunk's MATERIALIZED hunks
+	// (returned by add_chunk), not to line numbers the agent inferred from the raw diff. The
+	// host may have whole-hunk-expanded or trimmed the submitted range, so the only safe
+	// source of anchors is the response. Pin the instruction.
+	it("instructs the agent to anchor inline comments to materialized lines", () => {
+		const prompt = buildReviewPrompt(VALID);
+		const lower = prompt.toLowerCase();
+		expect(lower).toContain("anchor");
+		expect(lower).toContain("materialized");
+		// The literal handle the agent reads to discover valid anchors.
+		expect(prompt).toContain("response.chunk.hunks");
 	});
 
 	// The prompt is the contract teaching OpenCode (the LLM) how to use the new Code Mode
@@ -140,7 +160,7 @@ describe("buildReviewPrompt", () => {
 		expect(prompt).toContain("Promise.all");
 	});
 
-	it("includes one syntactically-valid example arrow snippet", () => {
+	it("includes one syntactically-valid example arrow snippet without a hunks field", () => {
 		const prompt = buildReviewPrompt(VALID);
 		// Extract the first ts code block. There should be exactly one example to avoid the
 		// LLM treating the prompt as a transcript to mimic verbatim.
@@ -151,6 +171,10 @@ describe("buildReviewPrompt", () => {
 		// The example must parse as a JS expression. The Function constructor proves it's at
 		// least syntactically a function-shaped expression (we don't actually run it).
 		expect(() => new Function(`return (${body});`)).not.toThrow();
+		// `add_chunk` no longer accepts a `hunks` field — the host materializes chunk
+		// content from the unified diff. Guard against the legacy field reappearing in the
+		// example, which would teach the LLM to send a payload the worker rejects.
+		expect(block).not.toContain("hunks:");
 	});
 
 	it("calls out finalize_review exactly once", () => {
