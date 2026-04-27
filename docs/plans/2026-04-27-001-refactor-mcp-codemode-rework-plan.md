@@ -224,10 +224,10 @@ Failure path: a thrown error inside the snippet propagates through `ExecuteResul
 
 **Approach:**
 - Keep `buildServer(agent: ReviewAgent): McpServer` largely intact — it stays the upstream registry of all six tools, descriptions, and Zod input shapes. This is the type/handler source of truth.
-- Add a new `buildCodeWrappedServer(agent, loader): McpServer` (or whatever shape `codeMcpServer` returns) that:
+- Add a new `buildCodeWrappedServer(agent, loader): Promise<McpServer>` (or whatever shape `codeMcpServer` returns) that:
   - Constructs the upstream via `buildServer(agent)`.
   - Constructs a `DynamicWorkerExecutor` from `@cloudflare/codemode` with `{ loader, globalOutbound: null }`. Leave `timeout` at its default (30s).
-  - Calls `codeMcpServer({ server: upstream, executor })` and returns the wrapped server.
+  - Awaits `codeMcpServer({ server: upstream, executor })` (the wrapper is async per the Code Mode docs) and returns the wrapped server.
 - Update `handleMcpRequest(request, agent, loader)` to build the wrapped server, hook it to `WebStandardStreamableHTTPServerTransport`, and serve the request. Preserve the existing "do not synchronously close the server" comment — the body-stream lifecycle is unchanged.
 - Update the DO `handleMcp(request)` to pass `this.env.LOADER` into `handleMcpRequest`.
 - Confirm at integration time whether `codeMcpServer` returns an `McpServer` (in which case the existing `server.connect(transport)` call works) or some other shape (in which case adapt). If the shape differs, encapsulate the difference inside `mcp.ts` so the DO's `handleMcp` stays a one-liner.
@@ -252,7 +252,7 @@ Failure path: a thrown error inside the snippet propagates through `ExecuteResul
 
 **Goal:** Prove that the new MCP surface honors every invariant the old surface did — auth, foreign keys, terminal-state guards, redaction, SSE — and adds the new ones the wrapper introduces (single tool surface, sandbox isolation, snippet error propagation).
 
-**Requirements:** R1, R2, R3, R4, R8
+**Requirements:** R1, R2, R3, R4, R8, R9
 
 **Dependencies:** U2
 
@@ -279,7 +279,6 @@ Failure path: a thrown error inside the snippet propagates through `ExecuteResul
 - Use the helper pattern from `apps/cli/test/harness/mock-opencode.ts:171-174` for tool-error assertions (`result.isError`).
 
 **Test scenarios:**
-<!-- Already enumerated under "Approach". -->
 - **Happy path:** snippet covering all six operations produces the expected final `Review` snapshot (groups, chunks, findings, comments, summary, status `finalized`, `finalizedAt` set, `reviewUrl` returned by the snippet's `codemode.finalize_review` call).
 - **Happy path:** `tools/list` returns exactly one tool named `code` with a description containing the names of all six host operations.
 - **Edge case:** snippet uses multiple `await` steps; SSE consumers see one event per step in order.
@@ -344,7 +343,7 @@ Failure path: a thrown error inside the snippet propagates through `ExecuteResul
 
 - U5. **Rewrite the OpenCode prompt's Phase 3 for Code Mode**
 
-**Goal:** Teach OpenCode (the LLM) to use the `code` tool to express Phase 3 (record each group). Phases 1, 2, and 4 keep their structure; the severity rubric, brevity directives, license-to-find-nothing, and constraints remain.
+**Goal:** Teach OpenCode (the LLM) to use the `code` tool to express Phase 3 (record each group) and to call `codemode.set_narrative` and `codemode.finalize_review` from inside a `code` tool call in Phase 4. Phases 1 and 2 keep their structure verbatim; Phase 4's intent (review-level summary, then finalize exactly once) is unchanged but its tool-invocation shape is updated. The severity rubric, brevity directives, license-to-find-nothing, and constraints sections are preserved verbatim.
 
 **Requirements:** R5
 
