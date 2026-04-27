@@ -221,6 +221,35 @@ describe("review CLI e2e", () => {
 		}
 	}, 60_000);
 
+	// U6 — full CLI → Worker → agent loop with the mock submitting fabricated chunk content.
+	// The Worker's diff-fidelity validator (U4) rejects the chunk with a structured
+	// `diff_mismatch` payload, the snippet's `code` tool call returns `isError: true`, OpenCode
+	// exits non-zero, and the CLI marks the review failed. This is the precise failure mode
+	// the validator was added to catch — the production bug it mirrors is an agent replacing
+	// real diff lines with synthetic glosses like `// + 20-line cron block: addRaw…`.
+	it("rejects the review when the agent submits a chunk whose content disagrees with the diff", async () => {
+		const fixture = await createGitFixture();
+		try {
+			const result = await runCli(fixture, { REVIEW_AGENT_MOCK_MODE: "bad-content" });
+			expect(result.exitCode).toBe(1);
+			// The structured payload threads through the snippet's error → OpenCode stderr →
+			// the CLI's failure message → the persisted review.error. We assert on the payload
+			// keys so a future change to the envelope shape catches this test deliberately.
+			expect(result.stderr).toContain('"code":"diff_mismatch"');
+			expect(result.stderr).toContain('"reason":"content_mismatch"');
+			expect(result.stderr).toContain('"file":"src/app.ts"');
+
+			const snapshot = await fetchSnapshot(result.stdout);
+			expect(snapshot.status).toBe("failed");
+			expect(snapshot.error).toContain("diff_mismatch");
+			// The chunk was rejected before insert — nothing past `define_group` landed.
+			expect(snapshot.chunks).toEqual([]);
+			expect(snapshot.findings).toEqual([]);
+		} finally {
+			await fixture.cleanup();
+		}
+	}, 60_000);
+
 	it("aborts before spawning OpenCode when the diff exceeds --max-diff-bytes", async () => {
 		// Failure has to surface BEFORE the agent runs because once the diff is in flight, the
 		// validator on the Worker can't enforce a smaller cap than what made it through. The
@@ -264,6 +293,11 @@ describe("review CLI e2e", () => {
 					// (not the committed value 'head').
 					REVIEW_AGENT_MOCK_EXPECT_FILE_PATH: "src/app.ts",
 					REVIEW_AGENT_MOCK_EXPECT_FILE_CONTENT: "export const value = 'wt-modified';\n",
+					// In --working-tree mode the diff is HEAD ('head') vs. the synthetic snapshot
+					// commit ('wt-modified'), so the mock's chunk content must match that diff —
+					// otherwise the Worker's fidelity validator (U4) would reject the chunk.
+					REVIEW_AGENT_MOCK_DELETE_CONTENT: "export const value = 'head';",
+					REVIEW_AGENT_MOCK_ADD_CONTENT: "export const value = 'wt-modified';",
 				},
 				mockOpenCodeBin,
 				8000,

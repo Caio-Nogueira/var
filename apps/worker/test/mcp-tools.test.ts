@@ -67,7 +67,11 @@ describe("Worker MCP review tools (Code Mode)", () => {
 	});
 
 	it("runs a single snippet covering every operation, persists it, and emits SSE in await order", async () => {
-		const created = await createReview(server.baseUrl, 3);
+		// Pass `sampleDiff()` so the Worker's fidelity validator (U4) actually runs against the
+		// chunk this snippet submits — without a real diff the validator short-circuits on the
+		// empty-index back-compat path. End-to-end coverage of the MCP → DO → validator path
+		// only kicks in when the diff is present.
+		const created = await createReview(server.baseUrl, 3, sampleDiff());
 		const events: ReviewEvent[] = [];
 		const abort = new AbortController();
 		const ssePromise = subscribeSse(
@@ -235,7 +239,10 @@ describe("Worker MCP review tools (Code Mode)", () => {
 	});
 
 	it("keeps the snapshot consistent when individual codemode.* calls fail mid-snippet", async () => {
-		const created = await createReview(server.baseUrl);
+		// Real diff present so the initial happy-path chunk insert exercises fidelity validation.
+		// Subsequent error-path chunks fail earlier checks (FK, self-consistency, etc.) — the
+		// validator order in `addChunk` guarantees those non-fidelity errors fire first.
+		const created = await createReview(server.baseUrl, 1, sampleDiff());
 		const client = await connectMcp(created.mcpUrl, created.jwt);
 		try {
 			// Land a known-good group + chunk first so we can compare before/after across the
@@ -340,7 +347,7 @@ describe("Worker MCP review tools (Code Mode)", () => {
 	});
 
 	it("keeps finalized reviews terminal even when a later snippet tries to add to them", async () => {
-		const created = await createReview(server.baseUrl);
+		const created = await createReview(server.baseUrl, 1, sampleDiff());
 		const client = await connectMcp(created.mcpUrl, created.jwt);
 		try {
 			await callCode(
@@ -782,6 +789,29 @@ function sampleChunk(overrides: Record<string, unknown> = {}): Record<string, un
 		caption: "Pin algorithm verifier",
 		...overrides,
 	};
+}
+
+/**
+ * Unified diff that exactly matches `sampleChunk()`'s line content. Tests pass this into
+ * `createReview` so the Worker's fidelity validator (U4) sees a real index against which the
+ * chunks register cleanly. Without it, `createReview` defaults to an empty diff and the
+ * validator skips — fine for tests that don't submit chunks, but a missed end-to-end signal
+ * for the ones that do.
+ */
+function sampleDiff(): string {
+	return [
+		"diff --git a/src/auth/verify.ts b/src/auth/verify.ts",
+		"index 1234567..89abcde 100644",
+		"--- a/src/auth/verify.ts",
+		"+++ b/src/auth/verify.ts",
+		"@@ -10,3 +10,4 @@",
+		" export function verify() {",
+		"-  return jwtVerify(token);",
+		"+  return jwtVerify(token, { algorithms: ['HS256'] });",
+		" }",
+		"+",
+		"",
+	].join("\n");
 }
 
 /**
