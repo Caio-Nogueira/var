@@ -3,7 +3,7 @@ import type { Review } from "@review-agent/schema";
 import { createReview, getReview, postReviewLifecycle } from "./api.js";
 import type { CliOptions } from "./args.js";
 import { CliError, errorMessage } from "./errors.js";
-import { countDiffFiles, resolveGitMetadata } from "./git.js";
+import { countDiffFiles, fetchOrigin, findGitRoot, resolveGitMetadata } from "./git.js";
 import { buildOpenCodeConfig } from "./opencode-config.js";
 import { type OpenCodeResult, runOpenCode } from "./opencode.js";
 import { formatProgressEvent } from "./progress.js";
@@ -42,12 +42,32 @@ export async function runReview(options: CliOptions, io: RunReviewIO): Promise<R
 	try {
 		io.signal?.addEventListener("abort", onAbort, { once: true });
 		throwIfAborted(io.signal);
+		const repoRoot = await findGitRoot(io.cwd);
+		throwIfAborted(io.signal);
+		if (options.fetch) {
+			writeLine(io.stdout, "Fetching origin...");
+			const outcome = await fetchOrigin({ repoRoot });
+			throwIfAborted(io.signal);
+			if (outcome.kind === "skipped") {
+				writeLine(io.stdout, `Skipped fetch: ${outcome.reason}`);
+			} else if (outcome.kind === "failed") {
+				writeLine(
+					io.stderr,
+					`Warning: git fetch origin failed, continuing with local refs: ${sanitizeText(outcome.reason, 500)}`,
+				);
+			}
+		}
 		const git = await resolveGitMetadata({
 			cwd: io.cwd,
 			baseRef: options.baseRef,
-			headRef: options.headRef,
+			head: options.workingTree
+				? { kind: "working-tree" }
+				: { kind: "ref", ref: options.headRef },
 		});
 		throwIfAborted(io.signal);
+		if (options.workingTree) {
+			writeLine(io.stdout, `Reviewing working tree against ${git.base.ref}`);
+		}
 		const totalFiles = await countDiffFiles(git.repoRoot, git.base.sha, git.head.sha);
 		throwIfAborted(io.signal);
 		const created = await createReview(

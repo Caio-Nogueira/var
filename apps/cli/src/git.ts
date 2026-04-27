@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { CliError } from "./errors.js";
 import { execFileText } from "./exec.js";
 
@@ -16,16 +19,59 @@ export interface GitMetadata {
 	head: GitRef;
 }
 
+/**
+ * Synthetic ref label used when the head is the user's working tree rather than a real ref.
+ * Surfaces in the Review snapshot's `head.ref` and downstream UI; uppercase + underscore makes it
+ * unambiguously a sentinel, not a branch name.
+ */
+export const WORKING_TREE_REF = "WORKING_TREE";
+
+export type GitHeadInput = { kind: "ref"; ref: string } | { kind: "working-tree" };
+
 export interface ResolveGitMetadataOptions {
 	cwd: string;
 	baseRef: string;
-	headRef: string;
+	head: GitHeadInput;
+}
+
+export type FetchOriginOutcome =
+	| { kind: "fetched" }
+	| { kind: "skipped"; reason: string }
+	| { kind: "failed"; reason: string };
+
+export interface FetchOriginOptions {
+	repoRoot: string;
+	timeoutMs?: number;
+}
+
+/**
+ * Fetch `origin` so that refs like `origin/main` reflect the remote's current state.
+ *
+ * Best-effort: returns a discriminated outcome rather than throwing so that callers can warn and
+ * continue when the user is offline, has no `origin` remote, or git is otherwise uncooperative.
+ * The fetch is bounded by `timeoutMs` (default 30s) to avoid hanging the CLI on stalled networks.
+ */
+export async function fetchOrigin(options: FetchOriginOptions): Promise<FetchOriginOutcome> {
+	const remoteUrl = await optionalGit(options.repoRoot, ["config", "--get", "remote.origin.url"]);
+	if (remoteUrl === undefined) {
+		return { kind: "skipped", reason: "no 'origin' remote configured" };
+	}
+	try {
+		await execFileText("git", ["fetch", "--prune", "--quiet", "origin"], {
+			cwd: options.repoRoot,
+			timeoutMs: options.timeoutMs ?? 30_000,
+		});
+		return { kind: "fetched" };
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		return { kind: "failed", reason };
+	}
 }
 
 export async function resolveGitMetadata(options: ResolveGitMetadataOptions): Promise<GitMetadata> {
 	const repoRoot = await findGitRoot(options.cwd);
 	const base = await resolveRef(repoRoot, options.baseRef, "base");
-	const head = await resolveRef(repoRoot, options.headRef, "head");
+	const head = await resolveHead(repoRoot, options.head);
 	const remoteUrl = await optionalGit(repoRoot, ["config", "--get", "remote.origin.url"]);
 	const branch = await optionalGit(repoRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
 
@@ -34,6 +80,80 @@ export async function resolveGitMetadata(options: ResolveGitMetadataOptions): Pr
 	if (branch !== undefined) repo.branch = branch;
 
 	return { repoRoot, repo, base, head };
+}
+
+async function resolveHead(repoRoot: string, head: GitHeadInput): Promise<GitRef> {
+	switch (head.kind) {
+		case "ref":
+			return resolveRef(repoRoot, head.ref, "head");
+		case "working-tree": {
+			const sha = await createWorkingTreeCommit(repoRoot);
+			return { ref: WORKING_TREE_REF, sha };
+		}
+	}
+}
+
+/**
+ * Capture the user's working tree (staged + unstaged + untracked, respecting .gitignore) as an
+ * unreachable commit and return its SHA. The result is a real commit object, so it slots into all
+ * the existing diff/worktree machinery without special casing.
+ *
+ * The implementation deliberately avoids touching repo state. Instead of `git stash` (which
+ * mutates the stash list and can't include untracked files without other side effects), we point
+ * `GIT_INDEX_FILE` at a throwaway file in a tmpdir, seed it from HEAD, run `git add -A` against
+ * that isolated index, and finally `git commit-tree` with HEAD as the parent. The repo's real
+ * index, working tree, and stash list are untouched. The synthetic commit is unreachable but
+ * lives long enough for the worktree checkout to use it.
+ */
+export async function createWorkingTreeCommit(repoRoot: string): Promise<string> {
+	const indexDir = await mkdtemp(join(tmpdir(), "review-agent-index-"));
+	const indexFile = join(indexDir, "index");
+	try {
+		const env: NodeJS.ProcessEnv = {
+			...process.env,
+			GIT_INDEX_FILE: indexFile,
+			// commit-tree falls back to repo config for author/committer identity. Inject env vars
+			// so this works in fresh repos without user.name/email configured (CI sandboxes, etc.).
+			GIT_AUTHOR_NAME: "review-agent",
+			GIT_AUTHOR_EMAIL: "review-agent@local",
+			GIT_COMMITTER_NAME: "review-agent",
+			GIT_COMMITTER_EMAIL: "review-agent@local",
+		};
+
+		try {
+			await execFileText("git", ["read-tree", "HEAD"], { cwd: repoRoot, env });
+		} catch (error) {
+			throw new CliError(
+				`could not snapshot working tree: HEAD does not point to a commit (${errorReason(error)})`,
+			);
+		}
+
+		// `git add -A` stages additions, modifications, and deletions, including untracked files,
+		// while still respecting .gitignore. Exactly the set of changes a developer would see in
+		// `git status` plus `git diff`.
+		await execFileText("git", ["add", "-A"], { cwd: repoRoot, env });
+
+		const treeResult = await execFileText("git", ["write-tree"], { cwd: repoRoot, env });
+		const tree = treeResult.stdout.trim();
+
+		const commitResult = await execFileText(
+			"git",
+			["commit-tree", tree, "-p", "HEAD", "-m", "review-agent: working tree snapshot"],
+			{ cwd: repoRoot, env },
+		);
+		const sha = commitResult.stdout.trim();
+		if (sha.length === 0) {
+			throw new CliError("git commit-tree produced no output for working tree snapshot");
+		}
+		return sha;
+	} finally {
+		await rm(indexDir, { recursive: true, force: true });
+	}
+}
+
+function errorReason(error: unknown): string {
+	if (error instanceof Error) return error.message;
+	return String(error);
 }
 
 /**
@@ -58,7 +178,7 @@ export async function runGit(args: string[], cwd: string): Promise<string> {
 	return result.stdout.trim();
 }
 
-async function findGitRoot(cwd: string): Promise<string> {
+export async function findGitRoot(cwd: string): Promise<string> {
 	try {
 		return await runGit(["rev-parse", "--show-toplevel"], cwd);
 	} catch {

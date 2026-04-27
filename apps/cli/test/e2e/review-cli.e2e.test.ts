@@ -46,7 +46,7 @@ describe("review CLI e2e", () => {
 			expect(result.stderr).not.toContain("Bearer ");
 			expect(result.stdout).toContain("Review created:");
 			expect(result.stdout).toContain("Review complete:");
-			expect(result.stdout).toContain("Group: [should_fix] Mock review");
+			expect(result.stdout).toContain("Group: Mock review");
 			expect(result.stdout).toContain("Chunk: src/app.ts (change, 1 hunk)");
 			expect(result.stdout).toContain("Finding: [consider] Mock finding");
 
@@ -72,7 +72,6 @@ describe("review CLI e2e", () => {
 				id: "mock-review",
 				title: "Mock review",
 				theme: "test",
-				severity: "should_fix",
 				chunkIds: ["app-change"],
 				findingIds: ["mock-finding"],
 				commentIds: ["mock-comment"],
@@ -193,11 +192,67 @@ describe("review CLI e2e", () => {
 		}
 	}, 60_000);
 
+	it("--working-tree reviews staged + unstaged + untracked changes against HEAD", async () => {
+		const fixture = await createGitFixture();
+		try {
+			// Mutate the working tree across all three categories. We expect each to flow into the
+			// synthetic head commit and be visible in OpenCode's worktree.
+			await fixture.write("src/app.ts", "export const value = 'wt-modified';\n"); // unstaged
+			await fixture.write("src/staged-file.ts", "export const staged = true;\n");
+			await fixture.git(["add", "src/staged-file.ts"]); // staged
+			await fixture.write("src/untracked.ts", "export const untracked = true;\n"); // untracked
+
+			const result = await runCli(
+				fixture,
+				{
+					REVIEW_AGENT_MOCK_MODE: "success",
+					// Confirm the worktree OpenCode sees actually contains the working-tree mutation
+					// (not the committed value 'head').
+					REVIEW_AGENT_MOCK_EXPECT_FILE_PATH: "src/app.ts",
+					REVIEW_AGENT_MOCK_EXPECT_FILE_CONTENT: "export const value = 'wt-modified';\n",
+				},
+				mockOpenCodeBin,
+				8000,
+				["--working-tree"],
+			);
+
+			if (result.exitCode !== 0) {
+				throw new Error(
+					`CLI failed unexpectedly\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+				);
+			}
+			expect(result.stdout).toContain("Reviewing working tree against HEAD");
+
+			const snapshot = await fetchSnapshot(result.stdout);
+			expect(snapshot.status).toBe("finalized");
+			// Default base when --working-tree is the user's HEAD commit.
+			expect(snapshot.base).toEqual({ ref: "HEAD", sha: fixture.headSha });
+			// Head is a freshly-synthesized commit object — distinct from HEAD, real 40-char SHA.
+			expect(snapshot.head.ref).toBe("WORKING_TREE");
+			expect(snapshot.head.sha).toMatch(/^[0-9a-f]{40}$/);
+			expect(snapshot.head.sha).not.toBe(fixture.headSha);
+			// Three working-tree changes (modified app.ts, staged staged-file.ts, untracked
+			// untracked.ts) should drive the totalFiles count.
+			expect(snapshot.totalFiles).toBe(3);
+
+			// And the user's repo state must be untouched by the review.
+			const status = await fixture.git(["status", "--porcelain", "--untracked-files=all"]);
+			expect(status).toMatch(/M\s+src\/app\.ts/);
+			expect(status).toMatch(/A\s+src\/staged-file\.ts/);
+			expect(status).toMatch(/\?\?\s+src\/untracked\.ts/);
+			const stashList = await fixture.git(["stash", "list"]);
+			expect(stashList).toBe("");
+		} finally {
+			await fixture.cleanup();
+		}
+	}, 60_000);
+
 	async function runCli(
 		fixture: GitFixture,
 		env: NodeJS.ProcessEnv,
 		opencodeBin = mockOpenCodeBin,
 		timeoutMs = 8000,
+		extraArgs: string[] = [],
 	): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
 		const child = spawn(
 			"bun",
@@ -209,6 +264,10 @@ describe("review CLI e2e", () => {
 				opencodeBin,
 				"--timeout-ms",
 				String(timeoutMs),
+				// The fixture configures `origin` to a non-existent SSH host. Skip the network
+				// fetch so e2e tests don't depend on (or hang on) DNS / SSH.
+				"--no-fetch",
+				...extraArgs,
 			],
 			{
 				cwd: fixture.repoRoot,

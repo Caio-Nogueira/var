@@ -11,6 +11,8 @@ describe("parseArgs", () => {
 				workerUrl: "http://localhost:8787",
 				opencodeBin: "opencode",
 				timeoutMs: 600_000,
+				fetch: true,
+				workingTree: false,
 			},
 		});
 	});
@@ -37,8 +39,62 @@ describe("parseArgs", () => {
 				workerUrl: "http://127.0.0.1:8788",
 				opencodeBin: "./mock-opencode",
 				timeoutMs: 1234,
+				fetch: true,
+				workingTree: false,
 			},
 		});
+	});
+
+	it("--working-tree flips the default base from origin/main to HEAD", () => {
+		const result = parseArgs(["--working-tree"]);
+		expect(result.kind).toBe("run");
+		if (result.kind !== "run") return;
+		expect(result.options.workingTree).toBe(true);
+		expect(result.options.baseRef).toBe("HEAD");
+	});
+
+	it("--working-tree respects an explicit --base override", () => {
+		const result = parseArgs(["--working-tree", "--base", "origin/main"]);
+		expect(result.kind).toBe("run");
+		if (result.kind !== "run") return;
+		expect(result.options.workingTree).toBe(true);
+		expect(result.options.baseRef).toBe("origin/main");
+	});
+
+	it("rejects --working-tree combined with --head", () => {
+		expect(() => parseArgs(["--working-tree", "--head", "abc123"])).toThrow(
+			/--working-tree cannot be combined with --head/,
+		);
+	});
+
+	it("disables fetch via --no-fetch", () => {
+		const result = parseArgs(["--no-fetch"]);
+		expect(result.kind).toBe("run");
+		if (result.kind !== "run") return;
+		expect(result.options.fetch).toBe(false);
+	});
+
+	it("disables fetch via REVIEW_AGENT_NO_FETCH=1", () => {
+		const result = parseArgs([], { REVIEW_AGENT_NO_FETCH: "1" });
+		expect(result.kind).toBe("run");
+		if (result.kind !== "run") return;
+		expect(result.options.fetch).toBe(false);
+	});
+
+	it("treats falsy REVIEW_AGENT_NO_FETCH values as default-on", () => {
+		for (const raw of ["", "0", "false", "no", "FALSE"]) {
+			const result = parseArgs([], { REVIEW_AGENT_NO_FETCH: raw });
+			expect(result.kind).toBe("run");
+			if (result.kind !== "run") continue;
+			expect(result.options.fetch).toBe(true);
+		}
+	});
+
+	it("--fetch overrides REVIEW_AGENT_NO_FETCH=1", () => {
+		const result = parseArgs(["--fetch"], { REVIEW_AGENT_NO_FETCH: "1" });
+		expect(result.kind).toBe("run");
+		if (result.kind !== "run") return;
+		expect(result.options.fetch).toBe(true);
 	});
 
 	it("returns help without requiring values", () => {
