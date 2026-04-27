@@ -37,7 +37,9 @@ export function ReviewPage({ reviewId }: Props) {
 			<ReviewHeader review={review} connection={connection} />
 
 			<div className="mx-auto flex max-w-[1280px]">
-				{stage === "structural" && <Sidebar review={review} />}
+				{(stage === "structural" || stage === "structural-with-failure") && (
+					<Sidebar review={review} />
+				)}
 
 				<main className="flex-1 px-6 md:px-10 py-8 min-w-0">
 					{stage === "failed-empty" && review.error && <FailureBanner error={review.error} />}
@@ -48,12 +50,13 @@ export function ReviewPage({ reviewId }: Props) {
 								Summary
 							</h2>
 							<p
-								className="mt-3 italic"
+								className="mt-3"
 								style={{
 									color: "var(--color-ink)",
-									fontSize: "var(--text-lg)",
-									maxWidth: "62ch",
-									lineHeight: 1.55,
+									fontFamily: "var(--font-narrative)",
+									fontSize: "var(--text-base)",
+									maxWidth: "78ch",
+									lineHeight: 1.7,
 								}}
 							>
 								{review.summary}

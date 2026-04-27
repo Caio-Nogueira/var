@@ -83,7 +83,7 @@ function LineNumber({ value }: { value: number | null }) {
 			className="text-right pr-2 select-none tabular-nums"
 			style={{
 				color: "var(--color-ink-4)",
-				fontSize: "11.5px",
+				fontSize: "10.5px",
 			}}
 		>
 			{value ?? ""}

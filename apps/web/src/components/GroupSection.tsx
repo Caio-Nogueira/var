@@ -46,12 +46,13 @@ export function GroupSection({ group, review }: Props) {
 
 			{group.narrative.trim().length > 0 && (
 				<p
-					className="mt-3 italic"
+					className="mt-3"
 					style={{
 						color: "var(--color-ink-2)",
-						maxWidth: "62ch",
-						fontSize: "var(--text-lg)",
-						lineHeight: 1.55,
+						fontFamily: "var(--font-narrative)",
+						fontSize: "var(--text-base)",
+						maxWidth: "78ch",
+						lineHeight: 1.7,
 					}}
 				>
 					{group.narrative}
