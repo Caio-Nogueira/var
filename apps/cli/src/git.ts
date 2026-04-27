@@ -173,6 +173,40 @@ export async function countDiffFiles(repoRoot: string, baseSha: string, headSha:
 	}
 }
 
+/**
+ * Capture the full unified diff for `base..head` exactly as the Worker will validate against.
+ *
+ * Important: this returns the diff **untrimmed**. The trailing newline is part of the unified
+ * format and the parser the Worker uses can rely on its presence for the last hunk's last line.
+ *
+ * `maxBufferBytes` controls how much output we let Node buffer; we set it slightly above the
+ * caller's intended cap so a diff that's `cap + 1` byte still arrives intact and we can reject
+ * it with a clear message (rather than letting Node kill the child with
+ * `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`). Pass a value at least 1 MiB above the cap you intend to
+ * enforce in user-facing code.
+ */
+export async function getUnifiedDiff(
+	repoRoot: string,
+	baseSha: string,
+	headSha: string,
+	maxBufferBytes: number,
+): Promise<string> {
+	if (baseSha === headSha) return "";
+	try {
+		const result = await execFileText("git", ["diff", `${baseSha}..${headSha}`], {
+			cwd: repoRoot,
+			maxBufferBytes,
+		});
+		// Do not trim — git's own trailing newline is part of the format the parser consumes.
+		return result.stdout;
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		throw new CliError(
+			`could not capture unified diff between ${baseSha} and ${headSha}: ${reason}`,
+		);
+	}
+}
+
 export async function runGit(args: string[], cwd: string): Promise<string> {
 	const result = await execFileText("git", args, { cwd });
 	return result.stdout.trim();

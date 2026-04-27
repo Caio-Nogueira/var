@@ -8,6 +8,7 @@ import {
 	countDiffFiles,
 	createWorkingTreeCommit,
 	fetchOrigin,
+	getUnifiedDiff,
 	resolveGitMetadata,
 } from "../src/git.js";
 import { createGitFixture } from "./harness/git-fixture.js";
@@ -207,6 +208,61 @@ describe("countDiffFiles", () => {
 		const fixture = await createGitFixture();
 		try {
 			expect(await countDiffFiles(fixture.repoRoot, fixture.headSha, fixture.headSha)).toBe(0);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+});
+
+describe("getUnifiedDiff", () => {
+	it("returns a unified diff covering both modified and added files", async () => {
+		const fixture = await createGitFixture();
+		try {
+			const diff = await getUnifiedDiff(
+				fixture.repoRoot,
+				fixture.baseSha,
+				fixture.headSha,
+				1024 * 1024,
+			);
+			// The fixture's head modifies src/app.ts and adds src/feature.ts. Both must show up
+			// with the standard unified-diff markers — these are what the Worker parser keys off
+			// to build its per-file index.
+			expect(diff).toContain("--- a/src/app.ts");
+			expect(diff).toContain("+++ b/src/app.ts");
+			expect(diff).toContain("+++ b/src/feature.ts");
+			expect(diff).toContain("@@");
+			// The trailing newline is part of unified-diff format and must be preserved so
+			// downstream parsers see a clean line boundary on the last hunk's last line.
+			expect(diff.endsWith("\n")).toBe(true);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
+	it("returns an empty string when base equals head", async () => {
+		const fixture = await createGitFixture();
+		try {
+			const diff = await getUnifiedDiff(
+				fixture.repoRoot,
+				fixture.headSha,
+				fixture.headSha,
+				1024 * 1024,
+			);
+			expect(diff).toBe("");
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
+	it("captures the working-tree synthetic head commit's diff", async () => {
+		const fixture = await createGitFixture();
+		try {
+			// Mirror the working-tree path: the synthetic commit IS the head we capture from.
+			await fixture.write("src/wt-change.ts", "export const x = 1;\n");
+			const sha = await createWorkingTreeCommit(fixture.repoRoot);
+			const diff = await getUnifiedDiff(fixture.repoRoot, fixture.headSha, sha, 1024 * 1024);
+			expect(diff).toContain("+++ b/src/wt-change.ts");
+			expect(diff).toContain("+export const x = 1;");
 		} finally {
 			await fixture.cleanup();
 		}

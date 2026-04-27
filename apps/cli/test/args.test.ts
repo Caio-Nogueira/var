@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_BASE_REF, DEFAULT_HEAD_REF, parseArgs } from "../src/args.js";
+import {
+	DEFAULT_BASE_REF,
+	DEFAULT_HEAD_REF,
+	DEFAULT_MAX_DIFF_BYTES,
+	parseArgs,
+} from "../src/args.js";
 
 describe("parseArgs", () => {
 	it("uses defaults", () => {
@@ -13,6 +18,7 @@ describe("parseArgs", () => {
 				timeoutMs: 600_000,
 				fetch: true,
 				workingTree: false,
+				maxDiffBytes: DEFAULT_MAX_DIFF_BYTES,
 			},
 		});
 	});
@@ -30,6 +36,8 @@ describe("parseArgs", () => {
 				"./mock-opencode",
 				"--timeout-ms",
 				"1234",
+				"--max-diff-bytes",
+				"4096",
 			]),
 		).toEqual({
 			kind: "run",
@@ -41,8 +49,17 @@ describe("parseArgs", () => {
 				timeoutMs: 1234,
 				fetch: true,
 				workingTree: false,
+				maxDiffBytes: 4096,
 			},
 		});
+	});
+
+	it("rejects --max-diff-bytes 0 and missing values", () => {
+		// Mirrors the parseTimeout pattern: must be a positive integer. Zero is meaningless
+		// (we'd reject every diff including empty); negatives are obviously invalid.
+		expect(() => parseArgs(["--max-diff-bytes", "0"])).toThrow("positive integer");
+		expect(() => parseArgs(["--max-diff-bytes", "-1"])).toThrow("positive integer");
+		expect(() => parseArgs(["--max-diff-bytes"])).toThrow("missing value");
 	});
 
 	it("--working-tree flips the default base from origin/main to HEAD", () => {

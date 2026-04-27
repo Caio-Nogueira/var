@@ -10,6 +10,13 @@ export interface ExecOptions {
 	cwd: string;
 	env?: NodeJS.ProcessEnv;
 	timeoutMs?: number;
+	/**
+	 * Bytes of stdout/stderr Node will buffer before killing the child. Default 10 MiB matches
+	 * Node's own default; bump for callers that intentionally capture large outputs (e.g.
+	 * `git diff` on a big PR — we want to capture up to the diff cap and reject on our own
+	 * terms rather than have Node truncate with `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`).
+	 */
+	maxBufferBytes?: number;
 }
 
 export async function execFileText(
@@ -25,7 +32,7 @@ export async function execFileText(
 				cwd: options.cwd,
 				env: options.env,
 				timeout: options.timeoutMs ?? 30_000,
-				maxBuffer: 10 * 1024 * 1024,
+				maxBuffer: options.maxBufferBytes ?? 10 * 1024 * 1024,
 			},
 			(error, stdout, stderr) => {
 				const result = { stdout: String(stdout), stderr: String(stderr) };

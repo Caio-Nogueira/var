@@ -3,7 +3,13 @@ import type { Review } from "@review-agent/schema";
 import { createReview, getReview, postReviewLifecycle } from "./api.js";
 import type { CliOptions } from "./args.js";
 import { CliError, errorMessage } from "./errors.js";
-import { countDiffFiles, fetchOrigin, findGitRoot, resolveGitMetadata } from "./git.js";
+import {
+	countDiffFiles,
+	fetchOrigin,
+	findGitRoot,
+	getUnifiedDiff,
+	resolveGitMetadata,
+} from "./git.js";
 import { buildOpenCodeConfig } from "./opencode-config.js";
 import { type OpenCodeResult, runOpenCode } from "./opencode.js";
 import { formatProgressEvent } from "./progress.js";
@@ -70,9 +76,30 @@ export async function runReview(options: CliOptions, io: RunReviewIO): Promise<R
 		}
 		const totalFiles = await countDiffFiles(git.repoRoot, git.base.sha, git.head.sha);
 		throwIfAborted(io.signal);
+		// Capture the diff against the same SHAs the agent will reference. For --working-tree
+		// runs, `git.head.sha` is already the synthetic snapshot commit produced by
+		// `createWorkingTreeCommit` inside `resolveGitMetadata`, so we get the exact same view
+		// of "head" the worktree checkout (and the agent) will see.
+		//
+		// We let `git diff` buffer up to 1 MiB more than the cap so a slightly-too-large diff
+		// arrives intact and we can reject it with a precise size in the message — instead of
+		// Node killing the child with a generic ERR_CHILD_PROCESS_STDIO_MAXBUFFER.
+		const unifiedDiff = await getUnifiedDiff(
+			git.repoRoot,
+			git.base.sha,
+			git.head.sha,
+			options.maxDiffBytes + 1024 * 1024,
+		);
+		throwIfAborted(io.signal);
+		if (unifiedDiff.length > options.maxDiffBytes) {
+			throw new CliError(
+				`unified diff (${unifiedDiff.length} bytes) exceeds --max-diff-bytes (${options.maxDiffBytes}). ` +
+					"Either raise the cap with --max-diff-bytes or narrow the review range with --base/--head.",
+			);
+		}
 		const created = await createReview(
 			options.workerUrl,
-			{ repo: git.repo, base: git.base, head: git.head, totalFiles },
+			{ repo: git.repo, base: git.base, head: git.head, totalFiles, unifiedDiff },
 			fetchImpl,
 			io.signal,
 		);

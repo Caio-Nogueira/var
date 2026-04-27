@@ -1,3 +1,4 @@
+import { MAX_UNIFIED_DIFF_BYTES } from "@review-agent/schema";
 import { UsageError } from "./errors.js";
 
 export interface CliOptions {
@@ -15,6 +16,14 @@ export interface CliOptions {
 	 * user passes `--base` explicitly.
 	 */
 	workingTree: boolean;
+	/**
+	 * Hard cap (in bytes) on the unified-diff text the CLI ships with the review. The Worker
+	 * uses the diff as the source-of-truth for `add_chunk` content fidelity validation, so we'd
+	 * rather fail loudly here than silently truncate. Defaults to `MAX_UNIFIED_DIFF_BYTES`
+	 * (10 MiB), which fits the vast majority of code-review-sized PRs. Override via
+	 * `--max-diff-bytes` for the rare repo whose review-worthy diff exceeds that.
+	 */
+	maxDiffBytes: number;
 }
 
 export type ParseResult = { kind: "help" } | { kind: "run"; options: CliOptions };
@@ -28,6 +37,7 @@ export const DEFAULT_OPENCODE_BIN = "opencode";
 export const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 export const DEFAULT_TIMEOUT_MINUTES = DEFAULT_TIMEOUT_MS / 60_000;
 export const DEFAULT_FETCH = true;
+export const DEFAULT_MAX_DIFF_BYTES = MAX_UNIFIED_DIFF_BYTES;
 /** Cap minutes input to keep the JS Number safe and surface absurd values early. */
 const MAX_TIMEOUT_MINUTES = 24 * 60;
 
@@ -42,6 +52,7 @@ export function parseArgs(argv: string[], env: Env = {}): ParseResult {
 		timeoutMs: parseTimeout(env.REVIEW_AGENT_TIMEOUT_MS, "REVIEW_AGENT_TIMEOUT_MS"),
 		fetch: parseFetchEnv(env.REVIEW_AGENT_NO_FETCH),
 		workingTree: false,
+		maxDiffBytes: DEFAULT_MAX_DIFF_BYTES,
 	};
 	let baseExplicitlySet = false;
 	let headExplicitlySet = false;
@@ -101,6 +112,10 @@ export function parseArgs(argv: string[], env: Env = {}): ParseResult {
 			case "--working-tree":
 				options.workingTree = true;
 				break;
+			case "--max-diff-bytes":
+				options.maxDiffBytes = parsePositiveInt(requireValue(arg, value), arg);
+				index += 1;
+				break;
 			default:
 				throw new UsageError(`unknown flag: ${arg}`);
 		}
@@ -126,7 +141,7 @@ export function usage(): string {
 	return [
 		"Usage: review [--base <ref>] [--head <ref> | --working-tree] [--worker-url <url>]",
 		"              [--opencode-bin <path>] [--timeout-minutes <n> | --timeout-ms <ms>]",
-		"              [--no-fetch]",
+		"              [--no-fetch] [--max-diff-bytes <bytes>]",
 		"",
 		"Runs a Worker-backed OpenCode review from the current git repository.",
 		"",
@@ -142,12 +157,17 @@ export function usage(): string {
 		"time. It cannot be combined with --timeout-ms (which expresses the same budget in",
 		"milliseconds and is preserved for tests). REVIEW_AGENT_TIMEOUT_MS still works.",
 		"",
+		"--max-diff-bytes caps the unified-diff text the CLI sends to the Worker. Reviews of",
+		"diffs larger than the cap fail loudly before any work happens. Default fits the vast",
+		"majority of code-review-sized PRs; raise it for repos with extraordinarily large diffs.",
+		"",
 		"Defaults:",
 		`  --base ${DEFAULT_BASE_REF}  (or ${DEFAULT_WORKING_TREE_BASE_REF} with --working-tree)`,
 		`  --head ${DEFAULT_HEAD_REF}`,
 		`  --worker-url ${DEFAULT_WORKER_URL}`,
 		`  --opencode-bin ${DEFAULT_OPENCODE_BIN}`,
 		`  --timeout-minutes ${DEFAULT_TIMEOUT_MINUTES}`,
+		`  --max-diff-bytes ${DEFAULT_MAX_DIFF_BYTES}`,
 		`  --fetch ${DEFAULT_FETCH ? "(on)" : "(off)"}`,
 	].join("\n");
 }
@@ -164,6 +184,10 @@ function normalizeWorkerUrl(url: string): string {
 
 function parseTimeout(value: string | undefined, label: string): number {
 	if (value === undefined) return DEFAULT_TIMEOUT_MS;
+	return parsePositiveInt(value, label);
+}
+
+function parsePositiveInt(value: string, label: string): number {
 	const parsed = Number(value);
 	if (!Number.isInteger(parsed) || parsed <= 0)
 		throw new UsageError(`${label} must be a positive integer`);

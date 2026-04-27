@@ -221,6 +221,31 @@ describe("review CLI e2e", () => {
 		}
 	}, 60_000);
 
+	it("aborts before spawning OpenCode when the diff exceeds --max-diff-bytes", async () => {
+		// Failure has to surface BEFORE the agent runs because once the diff is in flight, the
+		// validator on the Worker can't enforce a smaller cap than what made it through. The
+		// CLI's pre-flight check is therefore the only place that can reject loudly with the
+		// actual size and the cap, which is what users need to know to fix the invocation.
+		const fixture = await createGitFixture();
+		try {
+			const result = await runCli(
+				fixture,
+				{ REVIEW_AGENT_MOCK_MODE: "success" },
+				mockOpenCodeBin,
+				8000,
+				["--max-diff-bytes", "32"],
+			);
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toMatch(/unified diff \(\d+ bytes\) exceeds --max-diff-bytes \(32\)/);
+			// We must abort BEFORE creating the review on the Worker — otherwise we'd leave an
+			// orphaned `pending` review record that nobody finalizes. Stdout therefore must NOT
+			// contain a "Review created:" line.
+			expect(result.stdout).not.toContain("Review created:");
+		} finally {
+			await fixture.cleanup();
+		}
+	}, 60_000);
+
 	it("--working-tree reviews staged + unstaged + untracked changes against HEAD", async () => {
 		const fixture = await createGitFixture();
 		try {
