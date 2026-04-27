@@ -14,6 +14,7 @@
 
 import type {
 	Chunk,
+	ChunkInput,
 	Finding,
 	Group,
 	InlineComment,
@@ -22,17 +23,15 @@ import type {
 	ReviewStatus,
 } from "@review-agent/schema";
 import { Agent, type AgentContext } from "agents";
-import { DiffMismatchError, validateChunkAgainstDiff } from "./chunk-validator.js";
 import {
 	type DiffIndex,
-	type SerializedDiffIndex,
-	deserializeDiffIndex,
+	DiffMismatchError,
+	materializeChunk,
 	parseUnifiedDiff,
-	serializeDiffIndex,
 } from "./diff-index.js";
 import { handleMcpRequest } from "./mcp.js";
 
-export { DiffMismatchError } from "./chunk-validator.js";
+export { DiffMismatchError } from "./diff-index.js";
 
 export interface ReviewAgentEnv {
 	JWT_SECRET: string;
@@ -65,18 +64,13 @@ interface MetaRow {
 	finalizedAt?: string;
 	error?: string;
 	/**
-	 * Raw unified-diff text the CLI captured at review-creation time. The validator uses
-	 * `diffIndex` (a derived cache of this) on the hot path; this field exists for debugging
-	 * + future re-parsing if the index format ever changes. Optional so reviews persisted
-	 * before the validator landed remain readable.
+	 * Raw unified-diff text the CLI captured at review-creation time. Source of truth for chunk
+	 * materialization in `addChunk`: `getDiffIndex()` parses this lazily on first read and caches
+	 * the parsed `DiffIndex` on the DO instance keyed on the raw string value (see
+	 * `diffIndexCache`). Optional only because the persisted shape predates the materialization
+	 * contract; under U1's `CreateReviewBody` it is structurally required at the worker route.
 	 */
 	unifiedDiff?: string;
-	/**
-	 * Per-path lookup over the unified diff, serialized as nested arrays-of-tuples (Maps don't
-	 * JSON-serialize). Absence here is the back-compat hinge: validator pass-through for old
-	 * reviews. Presence triggers strict line-content validation in `addChunk`.
-	 */
-	diffIndex?: SerializedDiffIndex;
 }
 
 const BLANK_REVIEW: ReviewAgentState = {
@@ -96,12 +90,15 @@ const BLANK_REVIEW: ReviewAgentState = {
 export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 	private subscribers = new Set<Subscriber>();
 	/**
-	 * Lazily-hydrated, in-memory cache of the diff index for this review. The validator reads
-	 * it on every `addChunk`; we don't want to JSON-parse + rebuild Maps on each call. Cleared
-	 * by reads that find a different `meta` row underneath (which shouldn't happen mid-life,
-	 * but the assertion is cheap).
+	 * Lazily-hydrated, in-memory cache of the parsed diff index for this review. The
+	 * materializer reads it on every `addChunk`; we don't want to re-parse on each call. Keyed
+	 * on the raw `unifiedDiff` string value (NOT a `===` reference comparison) so that
+	 * `JSON.parse`-fresh `meta` reads still hit the cache. Eviction is implicit — the DO is
+	 * one-review-per-instance and a new review gets a fresh DO, so the Map will hold at most one
+	 * entry in practice. (We keep it as a Map rather than a single field to harden against any
+	 * future code path that re-initializes a DO under a new diff text.)
 	 */
-	private diffIndexCache: { serialized: SerializedDiffIndex; index: DiffIndex } | null = null;
+	private diffIndexCache: Map<string, DiffIndex> = new Map();
 
 	override initialState: ReviewAgentState = BLANK_REVIEW;
 
@@ -165,14 +162,15 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 			totalFiles: body.totalFiles,
 			createdAt: body.createdAt,
 		};
-		// Parse the diff once at init and stash both the raw text (for debugging / future
-		// re-parsing) and the serialized index (the hot-path read). An empty diff yields an
-		// empty index — that's the contract for `addChunk`'s back-compat skip path: zero entries
-		// means "no validation to run". The Worker rejects oversize diffs upstream via
+		// Stash the raw diff; `getDiffIndex()` parses it lazily on first `addChunk` and caches
+		// the result on the DO instance keyed on the raw text (see `diffIndexCache`). Storing
+		// only the raw text removes the prior `serializeDiffIndex`/`deserializeDiffIndex` round
+		// trip, which was both the source of the cache-identity bug (fresh array on every
+		// `JSON.parse`) and unnecessary work — `parseUnifiedDiff` is fast and the cache makes it
+		// effectively one-shot per DO life. The Worker rejects oversize diffs upstream via
 		// `CreateReviewBody.parse`, so by the time we get here we trust the size.
 		if (typeof body.unifiedDiff === "string") {
 			meta.unifiedDiff = body.unifiedDiff;
-			meta.diffIndex = serializeDiffIndex(parseUnifiedDiff(body.unifiedDiff));
 		}
 		this.writeMeta(meta);
 		const projected = this.project(meta);
@@ -240,22 +238,49 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 		return group;
 	}
 
-	addChunk(chunk: Chunk): Chunk {
+	addChunk(input: ChunkInput): Chunk {
 		this.requireWritable();
-		this.requireGroupExists(chunk.groupId);
-		validateChunkDiff(chunk);
-		// Content fidelity check against the actual unified diff. Skips when there is no index
-		// to compare against (older review or empty diff) — see `chunk-validator.ts` for the
-		// back-compat hinge. Throws `DiffMismatchError` on any line mismatch; the MCP tool
-		// surfaces those as structured payloads (U5) so the agent can self-correct on retry.
+		this.requireGroupExists(input.groupId);
 		const diffIndex = this.getDiffIndex();
-		if (diffIndex !== null) validateChunkAgainstDiff(chunk, diffIndex);
-		const persisted = redactChunkContent(chunk);
+		if (diffIndex === null) {
+			// Should be impossible under the new contract: `CreateReviewBody.unifiedDiff` is
+			// required (U1), so by the time `addChunk` runs the DO must have a diff to
+			// materialize against. Surface the same `file_unknown` reason rather than a
+			// cryptic "no diff index" so the agent gets an error in the same shape it knows
+			// how to read.
+			throw new DiffMismatchError(
+				"file_unknown",
+				input.id,
+				input.file.headPath ?? input.file.basePath ?? "",
+			);
+		}
+		// Materialize hunks from the indexed diff. The host owns content here — the agent
+		// only submitted ranges. `materializeChunk` throws `DiffMismatchError` for unknown
+		// files, binary files, ranges that miss every hunk, or counts that exceed the cap;
+		// the MCP layer (U4) maps the throw into the structured error envelope.
+		const hunks = materializeChunk(
+			diffIndex,
+			input.file,
+			input.baseRange,
+			input.headRange,
+			input.id,
+		);
+		const assembled: Chunk = {
+			id: input.id,
+			groupId: input.groupId,
+			file: input.file,
+			baseRange: input.baseRange,
+			headRange: input.headRange,
+			kind: input.kind,
+			hunks,
+			...(input.caption !== undefined ? { caption: input.caption } : {}),
+		};
+		const persisted = redactChunkContent(assembled);
 		try {
 			this
 				.sql`INSERT INTO chunks (id, group_id, json) VALUES (${persisted.id}, ${persisted.groupId}, ${JSON.stringify(persisted)})`;
 		} catch (err) {
-			throw collisionFor("chunk", chunk.id, err);
+			throw collisionFor("chunk", input.id, err);
 		}
 		this.afterMutation({ type: "chunk_added", chunk: persisted });
 		return persisted;
@@ -317,19 +342,22 @@ export class ReviewAgent extends Agent<ReviewAgentEnv, ReviewAgentState> {
 	}
 
 	/**
-	 * Hydrate the diff index for the validator. Returns `null` for back-compat with reviews
-	 * persisted before the validator landed (no `diffIndex` in `meta`) — callers should treat
-	 * `null` as "skip validation". The cached deserialized form is reused as long as the
-	 * underlying `meta.diffIndex` reference hasn't changed.
+	 * Hydrate the diff index for the materializer. Returns `null` only when no diff was stored
+	 * (a state U1's `CreateReviewBody` makes structurally unreachable, but the field is still
+	 * optional on `MetaRow` for round-trip safety).
+	 *
+	 * The cache is keyed on the raw `unifiedDiff` string VALUE, not on `===` reference identity:
+	 * `readMeta()` does a fresh `JSON.parse` on every call, so any reference-identity cache
+	 * (the prior implementation) would miss every time. Value-keyed lookup means a second
+	 * `addChunk` within the same DO instance hits the cache and skips re-parsing.
 	 */
 	getDiffIndex(): DiffIndex | null {
 		const meta = this.readMeta();
-		if (!meta || meta.diffIndex === undefined) return null;
-		if (this.diffIndexCache && this.diffIndexCache.serialized === meta.diffIndex) {
-			return this.diffIndexCache.index;
-		}
-		const index = deserializeDiffIndex(meta.diffIndex);
-		this.diffIndexCache = { serialized: meta.diffIndex, index };
+		if (!meta || typeof meta.unifiedDiff !== "string") return null;
+		const cached = this.diffIndexCache.get(meta.unifiedDiff);
+		if (cached !== undefined) return cached;
+		const index = parseUnifiedDiff(meta.unifiedDiff);
+		this.diffIndexCache.set(meta.unifiedDiff, index);
 		return index;
 	}
 
@@ -535,42 +563,6 @@ function appendId(map: Map<string, string[]>, key: string, id: string): void {
 	values.push(id);
 }
 
-function validateChunkDiff(chunk: Chunk): void {
-	validateRange("baseRange", chunk.baseRange);
-	validateRange("headRange", chunk.headRange);
-
-	for (const hunk of chunk.hunks) {
-		let nextBaseLine = hunk.baseStart;
-		let nextHeadLine = hunk.headStart;
-
-		for (const line of hunk.lines) {
-			if (line.kind === "context") {
-				validateExpectedLine("base", line.baseLine, nextBaseLine, chunk.id);
-				validateExpectedLine("head", line.headLine, nextHeadLine, chunk.id);
-				validateLineInChunkRange("base", line.baseLine, chunk.baseRange, chunk.id);
-				validateLineInChunkRange("head", line.headLine, chunk.headRange, chunk.id);
-				nextBaseLine += 1;
-				nextHeadLine += 1;
-				continue;
-			}
-
-			if (line.kind === "delete") {
-				validateExpectedLine("base", line.baseLine, nextBaseLine, chunk.id);
-				validateLineInChunkRange("base", line.baseLine, chunk.baseRange, chunk.id);
-				nextBaseLine += 1;
-				continue;
-			}
-
-			validateExpectedLine("head", line.headLine, nextHeadLine, chunk.id);
-			validateLineInChunkRange("head", line.headLine, chunk.headRange, chunk.id);
-			nextHeadLine += 1;
-		}
-
-		validateConsumedHunkSide("base", nextBaseLine, hunk.baseStart, hunk.baseLines, chunk.id);
-		validateConsumedHunkSide("head", nextHeadLine, hunk.headStart, hunk.headLines, chunk.id);
-	}
-}
-
 function validateCommentAnchor(comment: InlineComment, chunk: Chunk): void {
 	const found = chunk.hunks.some((hunk) =>
 		hunk.lines.some((line) =>
@@ -580,52 +572,6 @@ function validateCommentAnchor(comment: InlineComment, chunk: Chunk): void {
 	if (!found) {
 		throw new Error(`comment line ${comment.side}:${comment.line} not found in chunk ${chunk.id}`);
 	}
-}
-
-function validateRange(name: string, range: { start: number; end: number }): void {
-	if (range.start > range.end) return;
-	if (range.start < 1) throw new Error(`${name} must start at 1 or use an empty range`);
-}
-
-function validateExpectedLine(
-	side: "base" | "head",
-	actual: number,
-	expected: number,
-	chunkId: string,
-): void {
-	if (actual !== expected) {
-		throw new Error(
-			`${side} line ${actual} is out of order for chunk ${chunkId}; expected ${expected}`,
-		);
-	}
-}
-
-function validateLineInChunkRange(
-	side: "base" | "head",
-	line: number,
-	range: { start: number; end: number },
-	chunkId: string,
-): void {
-	if (!lineIsWithinRange(line, range)) {
-		throw new Error(`${side} line ${line} is outside ${side}Range for chunk ${chunkId}`);
-	}
-}
-
-function validateConsumedHunkSide(
-	side: "base" | "head",
-	nextLine: number,
-	start: number,
-	count: number,
-	chunkId: string,
-): void {
-	const expected = start + count;
-	if (nextLine !== expected) {
-		throw new Error(`${side} hunk line count mismatch for chunk ${chunkId}; expected ${count}`);
-	}
-}
-
-function lineIsWithinRange(line: number, range: { start: number; end: number }): boolean {
-	return range.start <= range.end && line >= range.start && line <= range.end;
 }
 
 function redactChunkContent(chunk: Chunk): Chunk {

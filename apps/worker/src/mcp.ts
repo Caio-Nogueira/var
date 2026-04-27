@@ -29,7 +29,7 @@ import {
 	FinalizeReviewInput,
 	SetNarrativeInput,
 } from "@review-agent/schema";
-import { DiffMismatchError } from "./chunk-validator.js";
+import { DiffMismatchError } from "./diff-index.js";
 import type { ReviewAgent } from "./review-agent.js";
 
 const SERVER_NAME = "review-agent";
