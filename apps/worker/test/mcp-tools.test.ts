@@ -452,6 +452,168 @@ describe("Worker MCP review tools (Code Mode)", () => {
 			await client.close();
 		}
 	});
+
+	// U5 — when the agent submits an `add_chunk` whose line content disagrees with the actual
+	// unified diff, the host returns a structured JSON error envelope so the agent can read it
+	// programmatically on retry. The shape is `{ code, reason, file, side, line, expected,
+	// actual, chunkId }` and is part of the contract documented in the prompt.
+	it("surfaces add_chunk diff-fidelity rejections as a structured JSON error envelope", async () => {
+		// Tiny, hand-aligned diff: one head line at position 1 contains "real". A chunk that
+		// claims position 1's content is "fake" must be rejected with the structured error.
+		const unifiedDiff = [
+			"diff --git a/src/x.ts b/src/x.ts",
+			"--- a/src/x.ts",
+			"+++ b/src/x.ts",
+			"@@ -0,0 +1,1 @@",
+			"+real",
+			"",
+		].join("\n");
+		const created = await createReview(server.baseUrl, 1, unifiedDiff);
+		const client = await connectMcp(created.mcpUrl, created.jwt);
+		try {
+			await callCode(
+				client,
+				`async () => {
+					await codemode.define_group(${json({
+						id: "g",
+						title: "G",
+						theme: "t",
+						narrative: "Single-file change.",
+					})});
+					return "ok";
+				}`,
+			);
+
+			const errorMessage = await expectCodeError(
+				client,
+				`async () => {
+					await codemode.add_chunk(${json({
+						id: "fake-chunk",
+						groupId: "g",
+						file: { headPath: "src/x.ts", basePath: null },
+						baseRange: { start: 0, end: -1 },
+						headRange: { start: 1, end: 1 },
+						kind: "change",
+						hunks: [
+							{
+								baseStart: 0,
+								baseLines: 0,
+								headStart: 1,
+								headLines: 1,
+								lines: [
+									{ kind: "add", baseLine: null, headLine: 1, content: "fake" },
+								],
+							},
+						],
+					})});
+					return "ok";
+				}`,
+			);
+
+			// The error message is the JSON payload (possibly wrapped by codemode's own framing).
+			// We extract the JSON object from it and assert on the structured fields.
+			const payload = extractDiffMismatchPayload(errorMessage);
+			expect(payload.code).toBe("diff_mismatch");
+			expect(payload.reason).toBe("content_mismatch");
+			expect(payload.chunkId).toBe("fake-chunk");
+			expect(payload.file).toBe("src/x.ts");
+			expect(payload.side).toBe("head");
+			expect(payload.line).toBe(1);
+			expect(payload.expected).toBe("real");
+			expect(payload.actual).toBe("fake");
+
+			// Nothing landed on the DO — the chunk was rejected before the SQL insert.
+			const snapshot = await fetchReview(server.baseUrl, created.reviewId);
+			expect(snapshot.chunks).toEqual([]);
+		} finally {
+			await client.close();
+		}
+	});
+
+	it("truncates oversize expected/actual strings in the structured error payload", async () => {
+		// 4000 chars is the schema cap on a DiffLine.content; the error envelope truncates to
+		// 400 + ellipsis so a single mismatched line can't blow up the response payload.
+		const longLine = "x".repeat(2000);
+		const unifiedDiff = [
+			"diff --git a/src/big.ts b/src/big.ts",
+			"--- a/src/big.ts",
+			"+++ b/src/big.ts",
+			"@@ -0,0 +1,1 @@",
+			`+${longLine}`,
+			"",
+		].join("\n");
+		const created = await createReview(server.baseUrl, 1, unifiedDiff);
+		const client = await connectMcp(created.mcpUrl, created.jwt);
+		try {
+			await callCode(
+				client,
+				`async () => {
+					await codemode.define_group(${json({
+						id: "g",
+						title: "G",
+						theme: "t",
+						narrative: "Long-line change.",
+					})});
+					return "ok";
+				}`,
+			);
+			const submittedActual = "y".repeat(2000);
+			const errorMessage = await expectCodeError(
+				client,
+				`async () => {
+					await codemode.add_chunk(${json({
+						id: "long-fake",
+						groupId: "g",
+						file: { headPath: "src/big.ts", basePath: null },
+						baseRange: { start: 0, end: -1 },
+						headRange: { start: 1, end: 1 },
+						kind: "change",
+						hunks: [
+							{
+								baseStart: 0,
+								baseLines: 0,
+								headStart: 1,
+								headLines: 1,
+								lines: [
+									{ kind: "add", baseLine: null, headLine: 1, content: submittedActual },
+								],
+							},
+						],
+					})});
+					return "ok";
+				}`,
+			);
+			const payload = extractDiffMismatchPayload(errorMessage);
+			expect(payload.expected).toMatch(/…\(truncated\)$/);
+			expect(payload.actual).toMatch(/…\(truncated\)$/);
+			// Truncated strings stay under the cap-plus-suffix length.
+			expect(payload.expected?.length ?? 0).toBeLessThan(450);
+			expect(payload.actual?.length ?? 0).toBeLessThan(450);
+		} finally {
+			await client.close();
+		}
+	});
+
+	it("does not widen the structured-error envelope to non-fidelity failures", async () => {
+		// Pin the scope: a terminal-state guard, FK violation, etc. keeps its existing
+		// string-message shape — the JSON envelope is exclusive to diff-mismatch rejections.
+		// If a future change accidentally widens it, this test catches the regression.
+		const created = await createReview(server.baseUrl);
+		const client = await connectMcp(created.mcpUrl, created.jwt);
+		try {
+			const errorMessage = await expectCodeError(
+				client,
+				`async () => {
+					await codemode.add_chunk(${json(sampleChunk({ groupId: "missing-group" }))});
+					return "ok";
+				}`,
+			);
+			expect(errorMessage).not.toContain('"code":"diff_mismatch"');
+			expect(errorMessage).toContain("missing-group");
+		} finally {
+			await client.close();
+		}
+	});
 });
 
 interface CreatedReview {
@@ -629,4 +791,29 @@ function sampleChunk(overrides: Record<string, unknown> = {}): Record<string, un
  */
 function json(value: unknown): string {
 	return JSON.stringify(value);
+}
+
+/**
+ * Extract the structured `diff_mismatch` JSON payload from a wrapped error message. The
+ * codemode wrapper may surround the upstream tool's text with its own framing (e.g. a snippet
+ * stack trace), so we scan for the `{...}` object containing `"code":"diff_mismatch"` rather
+ * than parsing the whole message as JSON.
+ */
+function extractDiffMismatchPayload(errorMessage: string): {
+	code: string;
+	reason: string;
+	chunkId: string;
+	file: string;
+	side: string | null;
+	line: number | null;
+	expected: string | null;
+	actual: string | null;
+} {
+	const match = errorMessage.match(/\{[^{]*"code"\s*:\s*"diff_mismatch"[\s\S]*?\}/);
+	if (!match) {
+		throw new Error(
+			`structured diff_mismatch payload not found in error message: ${errorMessage}`,
+		);
+	}
+	return JSON.parse(match[0]);
 }

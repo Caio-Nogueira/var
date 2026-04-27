@@ -29,10 +29,19 @@ import {
 	FinalizeReviewInput,
 	SetNarrativeInput,
 } from "@review-agent/schema";
+import { DiffMismatchError } from "./chunk-validator.js";
 import type { ReviewAgent } from "./review-agent.js";
 
 const SERVER_NAME = "review-agent";
 const SERVER_VERSION = "0.0.1";
+
+/**
+ * Cap on `expected`/`actual` strings inside the structured-error payload. Diff line content can
+ * be up to 4000 chars (per the schema's `DiffLine.content.max(4000)` cap); 400 is enough to
+ * convey the mismatch shape without letting a single error explode the response. Truncated
+ * values are suffixed with `…(truncated)` so the agent isn't surprised by a clipped string.
+ */
+const ERROR_FIELD_MAX_CHARS = 400;
 
 /**
  * Tool callback handlers all return a single text-content reply. The actual side effect is the
@@ -42,6 +51,31 @@ function ok(message: string, data: Record<string, unknown> = {}) {
 	return {
 		content: [{ type: "text" as const, text: JSON.stringify({ ok: true, message, ...data }) }],
 	};
+}
+
+/**
+ * Encode a `DiffMismatchError` as the MCP tool-result error envelope: `isError: true` plus a
+ * single text content block whose body is the JSON-serialized payload. The payload's field
+ * names are part of the contract — see the prompt addition in U7 and the `DiffMismatchError`
+ * schema for `toPayload()`.
+ */
+function diffMismatchResult(error: DiffMismatchError) {
+	const payload = error.toPayload();
+	const body = {
+		...payload,
+		expected: truncate(payload.expected),
+		actual: truncate(payload.actual),
+	};
+	return {
+		isError: true as const,
+		content: [{ type: "text" as const, text: JSON.stringify(body) }],
+	};
+}
+
+function truncate(value: string | null): string | null {
+	if (value === null) return null;
+	if (value.length <= ERROR_FIELD_MAX_CHARS) return value;
+	return `${value.slice(0, ERROR_FIELD_MAX_CHARS)}…(truncated)`;
 }
 
 /**
@@ -97,22 +131,32 @@ function buildServer(agent: ReviewAgent): McpServer {
 		},
 		async (raw) => {
 			const input = AddChunkInput.parse(raw);
-			const chunk = agent.addChunk({
-				id: input.id,
-				groupId: input.groupId,
-				file: input.file,
-				baseRange: input.baseRange,
-				headRange: input.headRange,
-				kind: input.kind,
-				hunks: input.hunks,
-				...(input.caption !== undefined ? { caption: input.caption } : {}),
-			});
-			return ok(`chunk ${chunk.id} added to ${chunk.groupId}`, {
-				chunkId: chunk.id,
-				groupId: chunk.groupId,
-				hunks: chunk.hunks.length,
-				lines: chunk.hunks.reduce((count, hunk) => count + hunk.lines.length, 0),
-			});
+			try {
+				const chunk = agent.addChunk({
+					id: input.id,
+					groupId: input.groupId,
+					file: input.file,
+					baseRange: input.baseRange,
+					headRange: input.headRange,
+					kind: input.kind,
+					hunks: input.hunks,
+					...(input.caption !== undefined ? { caption: input.caption } : {}),
+				});
+				return ok(`chunk ${chunk.id} added to ${chunk.groupId}`, {
+					chunkId: chunk.id,
+					groupId: chunk.groupId,
+					hunks: chunk.hunks.length,
+					lines: chunk.hunks.reduce((count, hunk) => count + hunk.lines.length, 0),
+				});
+			} catch (err) {
+				// Diff-fidelity rejections get a structured JSON envelope (parseable by the
+				// agent's retry path) instead of a free-form error string. Other errors —
+				// FK violations, terminal-state guards, schema parse errors — keep their
+				// existing string-message shape; we deliberately don't widen the structural
+				// surface beyond fidelity validation in this plan.
+				if (err instanceof DiffMismatchError) return diffMismatchResult(err);
+				throw err;
+			}
 		},
 	);
 
