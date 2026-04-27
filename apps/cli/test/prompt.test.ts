@@ -70,4 +70,70 @@ describe("buildReviewPrompt", () => {
 		expect(prompt.toLowerCase()).toContain("one sentence");
 		expect(prompt).toContain("1500");
 	});
+
+	// The agent has historically tried to "save space" by replacing real diff lines with
+	// summary stubs like `// + 20-line cron block: addRaw…`. The viewer can't expand those
+	// because the underlying chunk doesn't carry the lines. The fidelity contract makes that
+	// behavior an explicit error in the prompt; this test pins the contract so a future edit
+	// can't quietly drop it.
+	it("encodes the diff-fidelity contract (no summarized hunk lines)", () => {
+		const prompt = buildReviewPrompt(VALID);
+		const lower = prompt.toLowerCase();
+		expect(lower).toContain("diff fidelity");
+		expect(lower).toContain("verbatim");
+		// Both sides of the rule: the prohibition and the schema-headroom argument that
+		// removes "I had to summarize because the schema is too small" as an excuse.
+		expect(lower).toMatch(/never\s+summarize|do\s+not\s+(summari[sz]e|paraphrase)/);
+		expect(prompt).toContain("500");
+		expect(prompt).toContain("4000");
+	});
+
+	// The prompt is the contract teaching OpenCode (the LLM) how to use the new Code Mode
+	// surface. The MCP server exposes a single `code` tool whose handler runs an async arrow
+	// function in an isolated sandbox; inside the function the LLM calls typed `codemode.*`
+	// methods that map back to the host's review mutators. These anchors pin the prompt to
+	// that contract so a future edit can't quietly drop the directive to write TS, await
+	// every call, or finalize via codemode.finalize_review.
+	it("teaches the Code Mode contract: code tool, codemode.* namespace, sequential awaits", () => {
+		const prompt = buildReviewPrompt(VALID);
+		// The single tool name and the namespace.
+		expect(prompt).toContain("`code`");
+		expect(prompt).toContain("codemode.");
+		// Every review operation referenced as a `codemode.*` method.
+		for (const op of [
+			"codemode.define_group",
+			"codemode.add_chunk",
+			"codemode.add_finding",
+			"codemode.add_inline_comment",
+			"codemode.set_narrative",
+			"codemode.finalize_review",
+		]) {
+			expect(prompt).toContain(op);
+		}
+		// The runtime shape and the sequential-await rule.
+		expect(prompt).toContain("TypeScript");
+		expect(prompt).toContain("isolated sandbox");
+		expect(prompt).toContain("await");
+		expect(prompt).toContain("Promise.all");
+	});
+
+	it("includes one syntactically-valid example arrow snippet", () => {
+		const prompt = buildReviewPrompt(VALID);
+		// Extract the first ts code block. There should be exactly one example to avoid the
+		// LLM treating the prompt as a transcript to mimic verbatim.
+		const matches = prompt.match(/```ts[\s\S]*?```/g) ?? [];
+		expect(matches).toHaveLength(1);
+		const block = matches[0] ?? "";
+		const body = block.replace(/^```ts\n?/, "").replace(/```$/, "");
+		// The example must parse as a JS expression. The Function constructor proves it's at
+		// least syntactically a function-shaped expression (we don't actually run it).
+		expect(() => new Function(`return (${body});`)).not.toThrow();
+	});
+
+	it("calls out finalize_review exactly once", () => {
+		const prompt = buildReviewPrompt(VALID);
+		// "exactly once" governs the call to finalize_review. The phrase appears next to the
+		// call so the LLM can't miss the directive.
+		expect(prompt).toMatch(/finalize_review[\s\S]{0,200}exactly once/);
+	});
 });

@@ -104,20 +104,51 @@ EVERY HUNK IN THE DIFF MUST APPEAR IN SOME GROUP. Mechanical or generated change
 PHASE 3 — RECORD EACH GROUP
 ────────────────────────────────────────
 
+The only review-recording tool you have is \`code\`. It takes a single TypeScript async arrow function (as a string) and runs it in an isolated sandbox. Inside the function you have a \`codemode\` namespace with one typed method per review operation:
+
+  codemode.define_group({ id, title, theme, narrative })
+  codemode.add_chunk({ id, groupId, file, baseRange, headRange, kind, hunks, caption? })
+  codemode.add_finding({ id, groupId, severity, title, body, refs? })
+  codemode.add_inline_comment({ id, chunkId, line, side, body, severity })
+  codemode.set_narrative({ summary })
+  codemode.finalize_review({ summary? })
+
+The exact argument shapes are documented in the \`code\` tool's description as TypeScript types — read them there, not from this prompt.
+
 For each group, in your planned order:
 
-  1. \`define_group(id, title, theme, narrative)\`
+  1. \`codemode.define_group({ id, title, theme, narrative })\`
      The narrative is REQUIRED — 1-2 short sentences explaining what these hunks DO collectively, not whether they're good. Be brief. The schema rejects empty narratives and caps them at 4000 chars; you should be far under that. Groups have NO severity — severity is a defect concept and lives on findings, where it represents an actual call to action.
 
-  2. \`add_chunk(...)\` for each hunk in this group, in the order the human should read them. Include ALL hunks. The diff is incomplete until every hunk is recorded.
+  2. \`codemode.add_chunk(...)\` for each hunk in this group, in the order the human should read them. Include ALL hunks. The diff is incomplete until every hunk is recorded.
 
-  3. \`add_finding(...)\` for each actionable observation on this group.
+     DIFF FIDELITY — \`hunks[].lines[].content\` must be copied VERBATIM from \`git diff\` output, character-for-character. NEVER summarize, paraphrase, abbreviate, truncate, or replace lines with a description like \`// + 20-line cron block: addRaw…\`. The reader is reviewing the actual code, not your gloss of it. Every added/deleted line in the diff is a separate \`{ kind: "add" | "delete", content: "..." }\` entry. Every adjacent unchanged line you include is \`{ kind: "context", content: "..." }\` with the same \`content\` you saw in the diff (no \`+\`/\`-\`/\` \` prefix). Per the schema each hunk holds up to 500 lines and each line up to 4000 chars — that is more than enough for any real hunk. If a single hunk truly exceeds 500 lines, split it into multiple sequential \`add_chunk\` calls covering the same region; do NOT collapse content. Captions are the only place to summarize: a one-line agent-authored description of why the chunk matters. The lines themselves are the diff.
+
+  3. \`codemode.add_finding(...)\` for each actionable observation on this group.
      A finding asks the author to do something specific. If you wouldn't change the PR over it, don't write one.
      BE BRIEF. Aim for ONE sentence. The hard cap is 1500 chars but most findings should fit in one or two sentences. Lead with the actionable point; the chunk reference carries the detail.
      Use \`refs\` to anchor findings to specific chunks.
      ZERO findings per group is acceptable and often correct. A group with chunks and a narrative but no findings means "here's a coherent piece of the change, no issues."
 
-  4. \`add_inline_comment(...)\` only for wayfinding pins on specific lines. NOT for calls to action — those are findings. Use rarely; most reviews need none.
+  4. \`codemode.add_inline_comment(...)\` only for wayfinding pins on specific lines. NOT for calls to action — those are findings. Use rarely; most reviews need none.
+
+How to invoke:
+
+  - Each \`code\` call submits one async arrow function. Example shape (one group's worth):
+
+      \`\`\`ts
+      async () => {
+        await codemode.define_group({ id: "auth-refactor", title: "Auth verifier refactor", theme: "auth", narrative: "Pins JWT algorithm allow-list." });
+        await codemode.add_chunk({ id: "verify-fn", groupId: "auth-refactor", file: { headPath: "src/auth/verify.ts", basePath: "src/auth/verify.ts" }, baseRange: { start: 10, end: 12 }, headRange: { start: 10, end: 13 }, kind: "change", hunks: [/* ... */] });
+        await codemode.add_finding({ id: "pin-alg", groupId: "auth-refactor", severity: "must_fix", title: "Pin JWT algorithm", body: "Pin to HS256 to defeat alg confusion.", refs: [{ kind: "chunk", chunkId: "verify-fn" }] });
+        return "ok";
+      }
+      \`\`\`
+
+  - \`await\` every \`codemode.*\` call. Do NOT use \`Promise.all\` — the host expects sequential ordering so \`add_chunk\` can find the group it references and \`add_finding\` can find its chunks.
+  - You may issue multiple \`code\` tool calls (e.g., one per group) if that helps you keep snippets small. The review state lives on the host across calls.
+  - Keep snippets focused on review operations. The sandbox is isolated and cannot reach the network or file system; if you need to read code, do that with your read/grep/glob tools BEFORE writing the snippet.
+  - If a snippet throws (validation error, foreign-key miss, terminal-state guard), the \`code\` tool returns an error result. Read the error, fix the snippet, and call \`code\` again. Do not assume the host is broken — assume the snippet is wrong.
 
 Then move to the next group.
 
@@ -125,9 +156,9 @@ Then move to the next group.
 PHASE 4 — CONCLUDE
 ────────────────────────────────────────
 
-1. Verify every hunk in the diff is in some group's chunks. If you missed any, add them now.
-2. \`set_narrative(summary)\` — 1-2 sentences tying the groups together. Be brief. This is the first thing the human reads.
-3. \`finalize_review()\` exactly once.
+1. Verify every hunk in the diff is in some group's chunks. If you missed any, add them now via additional \`code\` calls.
+2. Call \`codemode.set_narrative({ summary })\` from inside a \`code\` call — 1-2 sentences tying the groups together. Be brief. This is the first thing the human reads.
+3. Call \`codemode.finalize_review({ summary? })\` exactly once. You can do this in the same \`code\` snippet that sets the narrative, or in a separate one — your choice.
 
 ────────────────────────────────────────
 SEVERITY RUBRIC (findings and inline comments only)
