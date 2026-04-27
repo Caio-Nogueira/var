@@ -106,8 +106,8 @@ PHASE 3 — RECORD EACH GROUP
 
 For each group, in your planned order:
 
-  1. \`define_group(id, title, theme, severity, narrative)\`
-     The narrative is REQUIRED — 1-2 short sentences explaining what these hunks DO collectively, not whether they're good. Be brief. The schema rejects empty narratives and caps them at 4000 chars; you should be far under that.
+  1. \`define_group(id, title, theme, narrative)\`
+     The narrative is REQUIRED — 1-2 short sentences explaining what these hunks DO collectively, not whether they're good. Be brief. The schema rejects empty narratives and caps them at 4000 chars; you should be far under that. Groups have NO severity — severity is a defect concept and lives on findings, where it represents an actual call to action.
 
   2. \`add_chunk(...)\` for each hunk in this group, in the order the human should read them. Include ALL hunks. The diff is incomplete until every hunk is recorded.
 
@@ -130,8 +130,10 @@ PHASE 4 — CONCLUDE
 3. \`finalize_review()\` exactly once.
 
 ────────────────────────────────────────
-SEVERITY RUBRIC
+SEVERITY RUBRIC (findings and inline comments only)
 ────────────────────────────────────────
+
+Severity attaches to findings and inline comments. Groups have NO severity — they describe the code, not its quality.
 
   must_fix   — data loss, security, breaks intended behavior. Author should not merge until fixed.
   should_fix — clear bug or regression risk; blocks the change's purpose.

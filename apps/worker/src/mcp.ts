@@ -49,7 +49,9 @@ function buildServer(agent: ReviewAgent): McpServer {
 			description:
 				"Define a thematic group with a non-empty narrative (1-2 sentences) describing what " +
 				"the hunks DO collectively. Group names must be OBJECTIVE and SEMANTIC — describe the " +
-				"code, not its quality. No adjectives. No editorial judgment. " +
+				"code, not its quality. No adjectives. No editorial judgment. Groups have NO " +
+				"severity; severity attaches to findings (and inline comments) where it represents an " +
+				"actual defect call. " +
 				"Good: 'new foo rpc call', 'wrangler configuration changes', 'metrics overhaul'. " +
 				"Bad: 'code quality', 'improvements', 'subtle race', 'auth cleanup'. " +
 				"Each id must be a unique kebab-case slug for this review.",
@@ -61,13 +63,12 @@ function buildServer(agent: ReviewAgent): McpServer {
 				id: input.id,
 				title: input.title,
 				theme: input.theme,
-				severity: input.severity,
 				narrative: input.narrative,
 				chunkIds: [],
 				findingIds: [],
 				commentIds: [],
 			});
-			return ok(`group ${group.id} defined`, { groupId: group.id, severity: group.severity });
+			return ok(`group ${group.id} defined`, { groupId: group.id });
 		},
 	);
 

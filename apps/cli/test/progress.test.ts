@@ -10,14 +10,13 @@ describe("formatProgressEvent", () => {
 					id: "auth",
 					title: "Auth changes",
 					theme: "auth",
-					severity: "should_fix",
 					narrative: "Modifies the auth verifier path.",
 					chunkIds: [],
 					findingIds: [],
 					commentIds: [],
 				},
 			}),
-		).toBe("Group: [should_fix] Auth changes");
+		).toBe("Group: Auth changes");
 
 		expect(
 			formatProgressEvent({

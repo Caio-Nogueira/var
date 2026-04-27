@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { groupSeverity, orderGroupsForDisplay } from "../lib/groupSeverity.js";
 import type { Review } from "../types.js";
 import { SeverityBadge } from "./SeverityBadge.js";
 
@@ -9,16 +10,20 @@ interface Props {
 /**
  * Sticky group navigation.
  *
- * - Renders one row per group with a severity dot, title, and finding count.
+ * - Renders one row per group with a severity dot (rolled up from the group's findings — empty
+ *   for groups with no findings), title, and finding count.
+ * - Groups are ordered by worst-finding severity (must_fix first), then insertion order. Same
+ *   ordering is applied in `ReviewPage` so the sidebar and the page match.
  * - Tracks the section currently in view via IntersectionObserver and animates a left bar to
  *   the active row using CSS transform (translateY) on a single moving indicator.
  */
 export function Sidebar({ review }: Props) {
-	const groupIds = review.groups.map((g) => g.id);
+	const orderedGroups = orderGroupsForDisplay(review.groups, review.findings);
+	const groupIds = orderedGroups.map((g) => g.id);
 	const activeId = useScrollSpy(groupIds);
 	const activeIndex = activeId ? groupIds.indexOf(activeId) : -1;
 
-	if (review.groups.length === 0) {
+	if (orderedGroups.length === 0) {
 		return (
 			<aside
 				className="hidden md:block w-[260px] shrink-0 px-6 pt-6 sticky top-[64px] h-[calc(100vh-64px)] overflow-y-auto scrollbar-quiet"
@@ -52,24 +57,33 @@ export function Sidebar({ review }: Props) {
 					}}
 				/>
 				<ul className="flex flex-col">
-					{review.groups.map((group, idx) => (
-						<li key={group.id} style={{ height: 44 }}>
-							<a
-								href={`#group-${group.id}`}
-								className="flex items-center gap-2.5 pl-3 pr-2 py-2 rounded-r text-sm transition-colors"
-								style={{
-									color: idx === activeIndex ? "var(--color-ink)" : "var(--color-ink-2)",
-									fontWeight: idx === activeIndex ? 600 : 500,
-								}}
-							>
-								<SeverityBadge severity={group.severity} variant="dot" />
-								<span className="truncate">{group.title}</span>
-								<span className="ml-auto text-xs font-mono" style={{ color: "var(--color-ink-4)" }}>
-									{group.findingIds.length || ""}
-								</span>
-							</a>
-						</li>
-					))}
+					{orderedGroups.map((group, idx) => {
+						const severity = groupSeverity(group, review.findings);
+						return (
+							<li key={group.id} style={{ height: 44 }}>
+								<a
+									href={`#group-${group.id}`}
+									className="flex items-center gap-2.5 pl-3 pr-2 py-2 rounded-r text-sm transition-colors"
+									style={{
+										color: idx === activeIndex ? "var(--color-ink)" : "var(--color-ink-2)",
+										fontWeight: idx === activeIndex ? 600 : 500,
+									}}
+								>
+									{severity ? (
+										<SeverityBadge severity={severity} variant="dot" />
+									) : (
+										// Reserve the dot slot so titles align across rows even when a group has
+										// no findings to roll up.
+										<span aria-hidden className="inline-block h-2 w-2 shrink-0" />
+									)}
+									<span className="truncate">{group.title}</span>
+									<span className="ml-auto text-xs font-mono" style={{ color: "var(--color-ink-4)" }}>
+										{group.findingIds.length || ""}
+									</span>
+								</a>
+							</li>
+						);
+					})}
 				</ul>
 			</nav>
 		</aside>

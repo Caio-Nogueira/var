@@ -24,7 +24,6 @@ const GROUP_ADDED: ReviewEvent = {
 		id: "auth-refactor",
 		title: "Auth refactor",
 		theme: "refactor",
-		severity: "should_fix",
 		narrative: "Splits the request middleware into per-audience verifiers.",
 		chunkIds: [],
 		findingIds: [],

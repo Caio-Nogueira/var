@@ -8,6 +8,7 @@ import {
 	ReviewEvent,
 	ReviewLifecycleBody,
 	SEVERITIES,
+	worstSeverity,
 } from "../src/index.js";
 
 describe("schema smoke", () => {
@@ -20,7 +21,6 @@ describe("schema smoke", () => {
 			id: "auth-refactor",
 			title: "Auth refactor",
 			theme: "refactor",
-			severity: "should_fix",
 			narrative: "Cleans up the JWT verifier.",
 		});
 		expect(parsed.id).toBe("auth-refactor");
@@ -32,10 +32,25 @@ describe("schema smoke", () => {
 				id: "Auth Refactor",
 				title: "x",
 				theme: "refactor",
-				severity: "nit",
 				narrative: "x",
 			}),
 		).toThrow();
+	});
+
+	it("DefineGroupInput strips severity (groups are organizational, not defect-rated)", () => {
+		// Groups used to carry a `severity`. We removed it because every level is defect-framed
+		// (must_fix/should_fix/consider/nit) which conflicts with the prompt's "objective and
+		// semantic" guidance for groups. Old agents/clients that still send `severity` keep
+		// working — the field is silently dropped — but new code reading the parsed object will
+		// not find it.
+		const parsed = DefineGroupInput.parse({
+			id: "auth-refactor",
+			title: "Auth refactor",
+			theme: "refactor",
+			narrative: "Cleans up the JWT verifier.",
+			severity: "should_fix",
+		});
+		expect("severity" in parsed).toBe(false);
 	});
 
 	it("DefineGroupInput requires a non-empty narrative", () => {
@@ -46,7 +61,6 @@ describe("schema smoke", () => {
 				id: "auth-refactor",
 				title: "Auth refactor",
 				theme: "refactor",
-				severity: "should_fix",
 				narrative: "",
 			}),
 		).toThrow();
@@ -56,7 +70,6 @@ describe("schema smoke", () => {
 				id: "auth-refactor",
 				title: "Auth refactor",
 				theme: "refactor",
-				severity: "should_fix",
 			}),
 		).toThrow();
 	});
@@ -67,10 +80,16 @@ describe("schema smoke", () => {
 				id: "auth-refactor",
 				title: "Auth refactor",
 				theme: "refactor",
-				severity: "should_fix",
 				narrative: "x".repeat(4001),
 			}),
 		).toThrow();
+	});
+
+	it("worstSeverity rolls up to the lowest-index severity, undefined for empty input", () => {
+		expect(worstSeverity([])).toBeUndefined();
+		expect(worstSeverity(["nit", "consider", "should_fix"])).toBe("should_fix");
+		expect(worstSeverity(["should_fix", "must_fix", "nit"])).toBe("must_fix");
+		expect(worstSeverity(["nit"])).toBe("nit");
 	});
 
 	it("AddFindingInput defaults refs to empty when omitted", () => {

@@ -56,7 +56,6 @@ async function main(): Promise<void> {
 		id: "mock-review",
 		title: "Mock review",
 		theme: "test",
-		severity: "should_fix",
 		narrative: "The mock exercised the MCP tools.",
 	});
 	await call(client, "add_chunk", {

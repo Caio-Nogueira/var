@@ -17,11 +17,32 @@ import { z } from "zod";
 // ---- Primitives -----------------------------------------------------------
 
 /**
- * Action-oriented severity levels (chosen 2026-04-25). Sort order matches array order.
+ * Action-oriented severity levels (chosen 2026-04-25). Sort order matches array order — index 0
+ * is the most severe.
+ *
+ * Severity attaches to *findings* and *inline comments*, not to groups: a group is an
+ * organizational unit (it describes what the code does), not a defect with a severity. UIs that
+ * want a per-group severity signal should derive it from the group's findings via
+ * `worstSeverity`.
  */
 export const SEVERITIES = ["must_fix", "should_fix", "consider", "nit"] as const;
 export const Severity = z.enum(SEVERITIES);
 export type Severity = z.infer<typeof Severity>;
+
+/**
+ * Worst (lowest-index) severity in the input, or `undefined` for an empty input. Useful for
+ * rolling up a group's finding severities into a single signal for sidebar dots and ordering.
+ */
+export function worstSeverity(severities: readonly Severity[]): Severity | undefined {
+	// Explicit `number` typing — `SEVERITIES.length` narrows to the tuple's literal length, which
+	// makes out-of-range index access a type error on the return.
+	let worstIndex: number = SEVERITIES.length;
+	for (const severity of severities) {
+		const index = SEVERITIES.indexOf(severity);
+		if (index < worstIndex) worstIndex = index;
+	}
+	return worstIndex < SEVERITIES.length ? SEVERITIES[worstIndex] : undefined;
+}
 
 /**
  * A line range within a single file revision. Both endpoints are inclusive and 1-based to match
@@ -164,13 +185,18 @@ export type InlineComment = z.infer<typeof InlineComment>;
  * changes") — never editorial or pre-biasing ("subtle race", "auth cleanup", "various"). The
  * narrative is required and capped short on purpose: 1-2 sentences explaining what the hunks
  * collectively DO, not whether they're good.
+ *
+ * Groups intentionally have NO `severity` field. Severity is a defect concept that belongs on
+ * findings and inline comments; forcing a severity onto a group conflicts with the prompt's
+ * "objective and semantic" guidance and pushed agents toward defaulting everything to
+ * `consider`. UIs that want a per-group severity signal compute it via `worstSeverity` over the
+ * group's findings.
  */
 export const Group = z.object({
 	id: Slug,
 	title: z.string().min(1).max(200),
 	/** Free-form short label for visual clustering ("refactor", "feature", "test", "perf", ...). */
 	theme: z.string().min(1).max(40),
-	severity: Severity,
 	narrative: z.string().min(1).max(4000),
 	/** Order is meaningful — agent chooses presentation order within the group. */
 	chunkIds: z.array(Slug).default([]),
@@ -235,7 +261,6 @@ export const DefineGroupInput = z.object({
 	id: Slug,
 	title: z.string().min(1).max(200),
 	theme: z.string().min(1).max(40),
-	severity: Severity,
 	/**
 	 * Required, non-empty. The agent gets a tool error if it tries to define a group without a
 	 * narrative — better feedback than a silent empty string. 1-2 sentences expected; cap is a

@@ -71,7 +71,6 @@ async function main() {
 		id: "auth-refactor",
 		title: "Auth verifier refactor",
 		theme: "refactor",
-		severity: "should_fix",
 		narrative: "Cleans up the JWT verifier path; mostly mechanical.",
 	});
 

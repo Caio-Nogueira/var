@@ -104,7 +104,7 @@ pnpm --filter @review-agent/schema test
 - Single page at `/r/:id`. Loads `GET /reviews/:id`, then subscribes to `/reviews/:id/events`.
 - Apply deltas to local store; render:
   - Top: review summary, status, base/head refs.
-  - Left: groups list, severity-sorted (must_fix → nit), with theme labels.
+  - Left: groups list, ordered by worst-finding severity (must_fix → nit, then groups with no findings), with theme labels.
   - Right (group detail): narrative paragraph, chunks rendered with diff library (consider `react-diff-view` or `diff2html`), inline comments anchored to lines, group findings listed below.
 - Read-only. No comment composition UI (per design).
 - Keep dependencies minimal. Style with vanilla CSS or one of the lightweight options; do not pull in a UI library yet.

@@ -1,7 +1,6 @@
 import type { Group, Review } from "../types.js";
 import { ChunkView } from "./ChunkView.js";
 import { FindingCard } from "./FindingCard.js";
-import { SeverityBadge } from "./SeverityBadge.js";
 
 interface Props {
 	group: Group;
@@ -15,6 +14,10 @@ interface Props {
  *
  * Order children by the projection ids on the group itself (chunkIds, findingIds, commentIds) —
  * the worker rebuilds these from persisted insert order, which is what the agent intended.
+ *
+ * Group headers intentionally show no severity badge — groups are organizational, not
+ * defect-rated. The severity signal lives on the FindingCards below the chunks, where it
+ * actually marks a call to action.
  */
 export function GroupSection({ group, review }: Props) {
 	const chunks = pickByIds(review.chunks, group.chunkIds);
@@ -30,7 +33,6 @@ export function GroupSection({ group, review }: Props) {
 	return (
 		<section id={`group-${group.id}`} className="stream-in scroll-mt-24" style={{ paddingTop: 8 }}>
 			<header className="flex items-baseline gap-3">
-				<SeverityBadge severity={group.severity} />
 				<span
 					className="font-mono text-xs uppercase tracking-[0.14em]"
 					style={{ color: "var(--color-ink-3)" }}

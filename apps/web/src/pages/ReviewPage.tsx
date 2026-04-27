@@ -2,6 +2,7 @@ import { GroupSection } from "../components/GroupSection.js";
 import { ProgressBanner } from "../components/ProgressBanner.js";
 import { ReviewHeader } from "../components/ReviewHeader.js";
 import { Sidebar } from "../components/Sidebar.js";
+import { orderGroupsForDisplay } from "../lib/groupSeverity.js";
 import { useReviewStream } from "../state/useReviewStream.js";
 import type { Review } from "../types.js";
 import { NotFoundPage } from "./NotFoundPage.js";
@@ -74,7 +75,7 @@ export function ReviewPage({ reviewId }: Props) {
 							<EmptyFinalized />
 						) : (
 							<div className="flex flex-col gap-16">
-								{review.groups.map((group) => (
+								{orderGroupsForDisplay(review.groups, review.findings).map((group) => (
 									<GroupSection key={group.id} group={group} review={review} />
 								))}
 							</div>

@@ -63,7 +63,6 @@ describe("Worker MCP review tools", () => {
 				id: "auth-refactor",
 				title: "Auth refactor",
 				theme: "auth",
-				severity: "should_fix",
 				narrative: "The auth verifier changed shape.",
 			});
 			await callOk(client, "add_chunk", sampleChunk());
@@ -159,7 +158,6 @@ describe("Worker MCP review tools", () => {
 				id: "secret-diff",
 				title: "Secret diff",
 				theme: "security",
-				severity: "must_fix",
 				narrative: "The diff includes credential-like strings.",
 			});
 			await callOk(client, "add_chunk", {
@@ -212,7 +210,6 @@ describe("Worker MCP review tools", () => {
 				id: "auth-refactor",
 				title: "Auth refactor",
 				theme: "auth",
-				severity: "should_fix",
 				narrative: "The auth verifier changed shape.",
 			});
 			await callOk(client, "add_chunk", sampleChunk());
@@ -222,7 +219,6 @@ describe("Worker MCP review tools", () => {
 				id: "auth-refactor",
 				title: "Duplicate group",
 				theme: "auth",
-				severity: "nit",
 				narrative: "duplicate",
 			});
 			await expectToolFailure(client, "add_chunk", sampleChunk({ groupId: "missing-group" }));
@@ -280,7 +276,6 @@ describe("Worker MCP review tools", () => {
 				id: "auth-refactor",
 				title: "Auth refactor",
 				theme: "auth",
-				severity: "should_fix",
 				narrative: "The auth verifier changed shape.",
 			});
 			await callOk(client, "finalize_review", { summary: "Final summary." });
