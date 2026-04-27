@@ -60,7 +60,10 @@ describe("resolveGitMetadata", () => {
 				"--name-only",
 				`${metadata.base.sha}..${metadata.head.sha}`,
 			]);
-			const files = diff.split("\n").filter((line) => line.length > 0).sort();
+			const files = diff
+				.split("\n")
+				.filter((line) => line.length > 0)
+				.sort();
 			expect(files).toEqual(["src/app.ts", "src/staged.ts", "src/untracked.ts"]);
 
 			// And critically: the repo state should be untouched by the snapshot operation.

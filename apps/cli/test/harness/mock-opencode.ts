@@ -172,8 +172,7 @@ function buildSnippet(mode: Exclude<Mode, "non-zero" | "hang">): string {
 	// diff is HEAD ('head') vs. the synthetic working-tree commit (whatever the test wrote).
 	const deleteContent =
 		process.env.REVIEW_AGENT_MOCK_DELETE_CONTENT ?? "export const value = 'base';";
-	const addContent =
-		process.env.REVIEW_AGENT_MOCK_ADD_CONTENT ?? "export const value = 'head';";
+	const addContent = process.env.REVIEW_AGENT_MOCK_ADD_CONTENT ?? "export const value = 'head';";
 
 	const defineGroup = `await codemode.define_group(${JSON.stringify({
 		id: "mock-review",

@@ -105,7 +105,9 @@ describe("buildReviewPrompt", () => {
 		// The directive that the host has the authoritative diff and the agent should fix the
 		// snippet rather than retrying the same payload. Phrased loosely so future copy edits
 		// (with the same intent) keep passing.
-		expect(prompt.toLowerCase()).toMatch(/host validates|validates? .* against .* (actual )?(unified )?diff/);
+		expect(prompt.toLowerCase()).toMatch(
+			/host validates|validates? .* against .* (actual )?(unified )?diff/,
+		);
 		expect(prompt).toContain("expected");
 	});
 

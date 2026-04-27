@@ -66,9 +66,7 @@ export async function runReview(options: CliOptions, io: RunReviewIO): Promise<R
 		const git = await resolveGitMetadata({
 			cwd: io.cwd,
 			baseRef: options.baseRef,
-			head: options.workingTree
-				? { kind: "working-tree" }
-				: { kind: "ref", ref: options.headRef },
+			head: options.workingTree ? { kind: "working-tree" } : { kind: "ref", ref: options.headRef },
 		});
 		throwIfAborted(io.signal);
 		if (options.workingTree) {
@@ -93,8 +91,7 @@ export async function runReview(options: CliOptions, io: RunReviewIO): Promise<R
 		throwIfAborted(io.signal);
 		if (unifiedDiff.length > options.maxDiffBytes) {
 			throw new CliError(
-				`unified diff (${unifiedDiff.length} bytes) exceeds --max-diff-bytes (${options.maxDiffBytes}). ` +
-					"Either raise the cap with --max-diff-bytes or narrow the review range with --base/--head.",
+				`unified diff (${unifiedDiff.length} bytes) exceeds --max-diff-bytes (${options.maxDiffBytes}). Either raise the cap with --max-diff-bytes or narrow the review range with --base/--head.`,
 			);
 		}
 		const created = await createReview(

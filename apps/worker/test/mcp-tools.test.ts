@@ -507,9 +507,7 @@ describe("Worker MCP review tools (Code Mode)", () => {
 								baseLines: 0,
 								headStart: 1,
 								headLines: 1,
-								lines: [
-									{ kind: "add", baseLine: null, headLine: 1, content: "fake" },
-								],
+								lines: [{ kind: "add", baseLine: null, headLine: 1, content: "fake" }],
 							},
 						],
 					})});
@@ -581,9 +579,7 @@ describe("Worker MCP review tools (Code Mode)", () => {
 								baseLines: 0,
 								headStart: 1,
 								headLines: 1,
-								lines: [
-									{ kind: "add", baseLine: null, headLine: 1, content: submittedActual },
-								],
+								lines: [{ kind: "add", baseLine: null, headLine: 1, content: submittedActual }],
 							},
 						],
 					})});
@@ -841,9 +837,7 @@ function extractDiffMismatchPayload(errorMessage: string): {
 } {
 	const match = errorMessage.match(/\{[^{]*"code"\s*:\s*"diff_mismatch"[\s\S]*?\}/);
 	if (!match) {
-		throw new Error(
-			`structured diff_mismatch payload not found in error message: ${errorMessage}`,
-		);
+		throw new Error(`structured diff_mismatch payload not found in error message: ${errorMessage}`);
 	}
 	return JSON.parse(match[0]);
 }

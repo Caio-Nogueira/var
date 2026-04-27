@@ -150,7 +150,7 @@ export function usage(): string {
 		"set REVIEW_AGENT_NO_FETCH=1) to skip the fetch when offline.",
 		"",
 		"--working-tree reviews your uncommitted changes (staged + unstaged + untracked,",
-		`respecting .gitignore). It cannot be combined with --head, and the default base flips`,
+		"respecting .gitignore). It cannot be combined with --head, and the default base flips",
 		`to ${DEFAULT_WORKING_TREE_BASE_REF} unless you pass --base explicitly.`,
 		"",
 		"--timeout-minutes is the human-friendly knob for big PRs that need >10 min of agent",

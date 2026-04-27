@@ -15,7 +15,9 @@ import { describe, expect, it } from "vitest";
 import { DiffMismatchError, validateChunkAgainstDiff } from "../src/chunk-validator.js";
 import { type DiffIndex, lineKey } from "../src/diff-index.js";
 
-function makeIndex(linesByKey: Map<string, { kind: "context" | "add" | "delete"; content: string }>): DiffIndex {
+function makeIndex(
+	linesByKey: Map<string, { kind: "context" | "add" | "delete"; content: string }>,
+): DiffIndex {
 	return new Map([["src/x.ts", { kind: "text", linesByKey }]]);
 }
 
@@ -106,9 +108,7 @@ describe("validateChunkAgainstDiff", () => {
 	});
 
 	it("throws line_not_in_diff when the line numbers don't appear in the indexed file", () => {
-		const index = makeIndex(
-			new Map([[lineKey("add", 1), { kind: "add", content: "new" }]]),
-		);
+		const index = makeIndex(new Map([[lineKey("add", 1), { kind: "add", content: "new" }]]));
 		// The chunk references head line 99, which is not in the file's index.
 		const chunk = makeChunk({
 			hunks: [
@@ -162,9 +162,7 @@ describe("validateChunkAgainstDiff", () => {
 		// validator allows it through; the host's own redaction pass would have produced the
 		// same string anyway after acceptance.
 		const index = makeIndex(
-			new Map([
-				[lineKey("add", 1), { kind: "add", content: "Bearer abc123def456ghi789jkl" }],
-			]),
+			new Map([[lineKey("add", 1), { kind: "add", content: "Bearer abc123def456ghi789jkl" }]]),
 		);
 		const chunk = makeChunk({
 			baseRange: { start: 0, end: -1 },
@@ -174,9 +172,7 @@ describe("validateChunkAgainstDiff", () => {
 					baseLines: 0,
 					headStart: 1,
 					headLines: 1,
-					lines: [
-						{ kind: "add", baseLine: null, headLine: 1, content: "Bearer [REDACTED_SECRET]" },
-					],
+					lines: [{ kind: "add", baseLine: null, headLine: 1, content: "Bearer [REDACTED_SECRET]" }],
 				},
 			],
 		});
@@ -198,9 +194,7 @@ describe("validateChunkAgainstDiff", () => {
 					baseLines: 0,
 					headStart: 1,
 					headLines: 1,
-					lines: [
-						{ kind: "add", baseLine: null, headLine: 1, content: "[REDACTED_SECRET]" },
-					],
+					lines: [{ kind: "add", baseLine: null, headLine: 1, content: "[REDACTED_SECRET]" }],
 				},
 			],
 		});
@@ -237,9 +231,7 @@ describe("validateChunkAgainstDiff", () => {
 					baseLines: 0,
 					headStart: 1,
 					headLines: 1,
-					lines: [
-						{ kind: "add", baseLine: null, headLine: 1, content: "renamed-content" },
-					],
+					lines: [{ kind: "add", baseLine: null, headLine: 1, content: "renamed-content" }],
 				},
 			],
 		});
@@ -297,9 +289,7 @@ describe("validateChunkAgainstDiff", () => {
 					baseLines: 1,
 					headStart: 5,
 					headLines: 1,
-					lines: [
-						{ kind: "context", baseLine: 5, headLine: 5, content: "shared" },
-					],
+					lines: [{ kind: "context", baseLine: 5, headLine: 5, content: "shared" }],
 				},
 			],
 		});

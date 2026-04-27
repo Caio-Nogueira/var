@@ -162,7 +162,11 @@ function errorReason(error: unknown): string {
  * than inferred mid-stream from chunk events. `git diff --name-only` already deduplicates
  * renames to a single entry on the head side.
  */
-export async function countDiffFiles(repoRoot: string, baseSha: string, headSha: string): Promise<number> {
+export async function countDiffFiles(
+	repoRoot: string,
+	baseSha: string,
+	headSha: string,
+): Promise<number> {
 	if (baseSha === headSha) return 0;
 	try {
 		const out = await runGit(["diff", "--name-only", `${baseSha}..${headSha}`], repoRoot);
@@ -201,9 +205,7 @@ export async function getUnifiedDiff(
 		return result.stdout;
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
-		throw new CliError(
-			`could not capture unified diff between ${baseSha} and ${headSha}: ${reason}`,
-		);
+		throw new CliError(`could not capture unified diff between ${baseSha} and ${headSha}: ${reason}`);
 	}
 }
 
