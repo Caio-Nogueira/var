@@ -161,6 +161,12 @@ function errorReason(error: unknown): string {
  * progress against this denominator, so we want it deterministic and computed up front rather
  * than inferred mid-stream from chunk events. `git diff --name-only` already deduplicates
  * renames to a single entry on the head side.
+ *
+ * Uses the three-dot range `base...head` — the diff from the merge-base of `base` and `head`
+ * to `head`. This is the PR-review semantic: only changes the branch introduced. The two-dot
+ * `base..head` form would include reverse changes from `base` that have landed on main since
+ * the branch forked, which is not what a reviewer is reviewing. Must stay in lockstep with
+ * `getUnifiedDiff` so the file count and the indexed diff describe the same set of changes.
  */
 export async function countDiffFiles(
 	repoRoot: string,
@@ -169,7 +175,7 @@ export async function countDiffFiles(
 ): Promise<number> {
 	if (baseSha === headSha) return 0;
 	try {
-		const out = await runGit(["diff", "--name-only", `${baseSha}..${headSha}`], repoRoot);
+		const out = await runGit(["diff", "--name-only", `${baseSha}...${headSha}`], repoRoot);
 		if (out.length === 0) return 0;
 		return out.split("\n").filter((line) => line.length > 0).length;
 	} catch {
@@ -178,7 +184,14 @@ export async function countDiffFiles(
 }
 
 /**
- * Capture the full unified diff for `base..head` exactly as the Worker will validate against.
+ * Capture the full unified diff for `base...head` exactly as the Worker will validate against.
+ *
+ * Uses the three-dot range — the diff from the merge-base of `base` and `head` to `head`. This
+ * is what a PR review actually wants: only changes the branch introduced, not reverse changes
+ * from `base` that landed on main since the branch forked. The agent's prompt also instructs
+ * it to read `git diff base...head`, so its view and the Worker's indexed diff agree
+ * byte-for-byte; otherwise the validator would reject ranges that exist in one view but not
+ * the other.
  *
  * Important: this returns the diff **untrimmed**. The trailing newline is part of the unified
  * format and the parser the Worker uses can rely on its presence for the last hunk's last line.
@@ -197,7 +210,7 @@ export async function getUnifiedDiff(
 ): Promise<string> {
 	if (baseSha === headSha) return "";
 	try {
-		const result = await execFileText("git", ["diff", `${baseSha}..${headSha}`], {
+		const result = await execFileText("git", ["diff", `${baseSha}...${headSha}`], {
 			cwd: repoRoot,
 			maxBufferBytes,
 		});

@@ -55,7 +55,7 @@ PHASE 1 — UNDERSTAND THE CHANGE
 
 Before recording anything, build a mental model.
 
-1. Run \`git diff ${options.base.sha}..${options.head.sha}\` to see every hunk.
+1. Run \`git diff ${options.base.sha}...${options.head.sha}\` to see every hunk. Three dots — the diff since head branched off base. The host indexes the same three-dot diff, so this is the authoritative view.
 2. Run \`git log ${options.base.sha}..${options.head.sha}\` to see the commit messages.
 3. For each meaningfully-changed file, READ AT LEAST ONE FULL FILE worth of surrounding code — not just the hunk. You have read access to the whole repository. Use it.
 4. Identify the risk surface: public APIs whose contract changed, callers of modified functions, tests that exist (or should), side effects that propagate.
@@ -122,7 +122,7 @@ For each group, in your planned order:
 
   2. \`codemode.add_chunk(...)\` for each hunk in this group, in the order the human should read them. Include ALL hunks. The diff is incomplete until every hunk is recorded.
 
-     Read \`git diff ${options.base.sha}..${options.head.sha}\` thoroughly before proposing chunks. Pick \`baseRange\`/\`headRange\` directly from the line numbers shown in the diff output. The host materializes the actual diff content from the unified diff it has on file — your job is curation (which lines belong together, in what order), not transcription. Captions are the only place to summarize: a one-line agent-authored description of why the chunk matters.
+     Read \`git diff ${options.base.sha}...${options.head.sha}\` thoroughly before proposing chunks (three dots — the diff since head branched off base; this is the diff the host indexed). Pick \`baseRange\`/\`headRange\` directly from the line numbers shown in the diff output. The host materializes the actual diff content from the unified diff it has on file — your job is curation (which lines belong together, in what order), not transcription. Captions are the only place to summarize: a one-line agent-authored description of why the chunk matters.
 
      Don't draw two chunks over the same code; if you want two captions on one region, use one chunk and write a richer caption.
 
