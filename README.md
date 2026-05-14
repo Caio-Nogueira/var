@@ -53,11 +53,15 @@ Pre-alpha. Worker, MCP, SSE, CLI orchestration, and SPA viewer are in. See
 ## Review shape
 
 The agent's job is to **organize and annotate** the diff — not curate which parts the human
-sees. Every hunk in the diff appears in the final review (prompt-enforced today; structural
-enforcement deferred). Within each group the reading order is **narrative → chunks → findings**:
-the human sees the code first, then the agent's commentary on it.
+sees. The CLI captures the full unified diff when the review is created, and the Worker stores
+and indexes that same diff. The agent chooses grouping, ordering, and ranges, and the prompt/tool
+contracts require every hunk to land in some group's chunks before finalization; the rendered diff
+content itself is host-owned because `add_chunk` accepts references only and the Worker
+materializes the accepted hunks from its indexed diff. Within each group the reading order is
+**narrative → chunks → findings**: the human sees the code first, then the agent's commentary on
+it.
 
-Two principles thread through the prompt:
+Key principles thread through the prompt and host contract:
 
 - **Objective groups, subjective findings.** Group names describe what the code does
   (e.g. `"new foo rpc call"`, `"wrangler configuration changes"`, `"metrics overhaul"`). No
@@ -66,9 +70,9 @@ Two principles thread through the prompt:
 - **Brevity everywhere.** Group narratives 1-2 sentences. Findings aim for one sentence (the
   schema caps `Finding.body` at 1500 chars). Review summary 1-2 sentences.
 - **Reference-only chunks.** The CLI ships the full unified diff with each review; the Worker
-  materializes chunk content from the diff at `add_chunk` time. Agents submit ranges and
-  curatorial intent (`baseRange`, `headRange`, `caption`) — never diff bytes. The four
-  `diff_mismatch` reasons (`file_unknown`, `range_outside_diff`, `binary_file`,
+  materializes chunk content from that indexed diff at `add_chunk` time. Agents submit ranges and
+  curatorial intent (`baseRange`, `headRange`, `caption`) — never diff bytes and never a `hunks`
+  payload. The four `diff_mismatch` reasons (`file_unknown`, `range_outside_diff`, `binary_file`,
   `too_many_hunks`) tell the agent how to fix a missed range; the host owns the content.
 
 While the review is in flight, the SPA shows a progress counter (`X of Y files processed · N
@@ -76,5 +80,7 @@ groups · M findings`) instead of half-written content. The full structural view
 the agent finalizes. On failure with partial work, the recorded groups render under an
 "incomplete review" notice.
 
-The plan that delivered this shape is at
-[`docs/plans/2026-04-25-002-feat-review-output-quality-and-progress-ux-plan.md`](docs/plans/2026-04-25-002-feat-review-output-quality-and-progress-ux-plan.md).
+The plans that delivered this shape are:
+
+- [`docs/plans/2026-04-25-002-feat-review-output-quality-and-progress-ux-plan.md`](docs/plans/2026-04-25-002-feat-review-output-quality-and-progress-ux-plan.md)
+- [`docs/plans/2026-04-27-003-refactor-reference-only-chunks-plan.md`](docs/plans/2026-04-27-003-refactor-reference-only-chunks-plan.md)
